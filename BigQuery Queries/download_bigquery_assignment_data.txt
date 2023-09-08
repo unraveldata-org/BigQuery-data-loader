@@ -1,0 +1,22 @@
+CREATE TEMP TABLE $region_ASSIGNMENTS_TEMP AS
+(SELECT
+project_id,
+project_number,
+assignment_id,
+reservation_name,
+job_type,
+assignee_id,
+assignee_number,
+assignee_type,
+ddl
+FROM `admin_project_id.region-$region`.INFORMATION_SCHEMA.ASSIGNMENTS);
+
+
+
+EXPORT DATA OPTIONS(
+  uri='gs://utkarsh-bucket/upload_csv_test/$region_ASSIGNMENTS_*.csv',
+  format='CSV',
+  overwrite=true,
+  header=true,
+  field_delimiter = ',') AS
+   SELECT * from $region_ASSIGNMENTS_TEMP;
