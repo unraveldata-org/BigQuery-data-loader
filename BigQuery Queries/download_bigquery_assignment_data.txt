@@ -9,7 +9,7 @@ assignee_id,
 assignee_number,
 assignee_type,
 ddl
-FROM `admin_project_id.region-$region`.INFORMATION_SCHEMA.ASSIGNMENTS);
+FROM `$admin_project_id.region-$region`.INFORMATION_SCHEMA.ASSIGNMENTS);
 
 
 

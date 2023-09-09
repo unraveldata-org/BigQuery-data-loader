@@ -10,7 +10,7 @@ edition,
 target_job_concurrency,
 autoscale.current_slots,
 autoscale.max_slots
-FROM `admin_project_id.region-$region`.INFORMATION_SCHEMA.RESERVATIONS);
+FROM `$admin_project_id.region-$region`.INFORMATION_SCHEMA.RESERVATIONS);
 
 
 
