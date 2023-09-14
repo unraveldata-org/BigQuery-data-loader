@@ -37,7 +37,7 @@ TO_JSON(query_info) as query_info,
 transferred_bytes,
 TO_JSON(bi_engine_statistics) as bi_engine_statistics,
 TO_JSON(materialized_view_statistics) as materialized_view_statistics
-FROM `region-$region`.INFORMATION_SCHEMA.JOBS WHERE creation_time BETWEEN TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY) AND CURRENT_TIMESTAMP());
+FROM `$my-project_id`.`region-$region`.INFORMATION_SCHEMA.JOBS WHERE creation_time BETWEEN TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY) AND CURRENT_TIMESTAMP());
 
 
 
