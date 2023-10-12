@@ -42,7 +42,7 @@ FROM `$my-project_id`.`region-$region`.INFORMATION_SCHEMA.JOBS WHERE creation_ti
 
 
 EXPORT DATA OPTIONS(
-  uri='gs://example-bucket/folder_name/$region_JOBS_*.csv',
+  uri='gs://unravel-bucket/folder_name/$region_JOBS_*.csv',
   format='CSV',
   overwrite=true,
   header=true,

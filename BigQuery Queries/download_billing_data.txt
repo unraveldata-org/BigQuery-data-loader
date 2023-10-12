@@ -28,7 +28,7 @@ TO_JSON(adjustment_info) as adjustment_info
 FROM `$project.$datset.$table_name` WHERE export_time BETWEEN TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 60 DAY) AND CURRENT_TIMESTAMP();
 
 EXPORT DATA OPTIONS(
-  uri='gs://example-bucket/folder_name/GCP_BILLING_*.csv',
+  uri='gs://unravel-bucket/folder_name/GCP_BILLING_*.csv',
   format='CSV',
   overwrite=true,
   header=true,

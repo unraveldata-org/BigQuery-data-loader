@@ -30,7 +30,7 @@ FROM `$my-project_id`.`region-$region`.INFORMATION_SCHEMA.JOBS_TIMELINE WHERE jo
 
 
 EXPORT DATA OPTIONS(
-  uri='gs://example-bucket/folder_name/$region_JOBS_TIMELINE_*.csv',
+  uri='gs://unravel-bucket/folder_name/$region_JOBS_TIMELINE_*.csv',
   format='CSV',
   overwrite=true,
   header=true,

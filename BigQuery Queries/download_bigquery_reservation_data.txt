@@ -15,7 +15,7 @@ FROM `$admin_project_id.region-$region`.INFORMATION_SCHEMA.RESERVATIONS);
 
 
 EXPORT DATA OPTIONS(
-  uri='gs://example-bucket/folder_name/$region_RESERVATIONS_*.csv',
+  uri='gs://unravel-bucket/folder_name/$region_RESERVATIONS_*.csv',
   format='CSV',
   overwrite=true,
   header=true,
