@@ -12,6 +12,11 @@ data "google_project" "project" {
 
 }
 
+resource "random_integer" "unique_id" {
+  max = 5000
+  min = 1
+}
+
 # Create Service account
 resource "google_service_account" "project_service_account" {
 
@@ -28,7 +33,7 @@ module "monitoring_iam" {
 
   project_ids             = local.project_ids_map
   role_permission         = local.monitoring_project_role_permission
-  role_name               = "mon_${var.unravel_role}"
+  role_name               = "mon_${var.unravel_role}_${random_integer.unique_id.id}"
   unravel_service_account = "serviceAccount:${google_service_account.project_service_account.email}"
 
 
@@ -44,7 +49,7 @@ module "admin_iam" {
 
   project_ids             = local.admin_project_ids_map
   role_permission         = local.admin_project_role_permission
-  role_name               = "admin_${var.unravel_role}"
+  role_name               = "admin_${var.unravel_role}_${random_integer.unique_id.id}"
   unravel_service_account = "serviceAccount:${google_service_account.project_service_account.email}"
 
 
@@ -60,7 +65,7 @@ module "billing_iam" {
 
   project_ids             = local.billing_project_ids_map
   role_permission         = local.billing_project_role_permission
-  role_name               = "billing_${var.unravel_role}"
+  role_name               = "billing_${var.unravel_role}_${random_integer.unique_id.id}"
   unravel_service_account = "serviceAccount:${google_service_account.project_service_account.email}"
 
 
