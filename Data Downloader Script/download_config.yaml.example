@@ -1,0 +1,8 @@
+bigquery:
+  gcs_bucket_path: "gcs/bucket/path"
+  locations: "region-1,region-2"
+  projects: "project_id1,project_id2"
+  billing_project: "project_id"
+  billing_dataset: "dataset_id"
+  billing_table: "table_name"
+  credential: "/path/to/credential/file"
