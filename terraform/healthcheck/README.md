@@ -12,27 +12,6 @@ git
 curl
 vim
 ```
-The GCP user running this terrafrom script should have the following permissions.
-
-```bash
-Monitoring Projects
-    bigquery.jobs.create
-    bigquery.jobs.listAll
-    storage.objects.create
-    storage.objects.list
-
-Admin Projects
-    bigquery.jobs.create
-    bigquery.reservations.list
-    storage.objects.create
-    storage.objects.list
-
-Billing Projects
-    bigquery.jobs.create
-    bigquery.tables.getData
-    storage.objects.create
-    storage.objects.list
-```
 
 
 ### Download Terraform
@@ -115,24 +94,7 @@ To view a list of resources created by Terraform, execute the following command:
 terraform output
 ```
 
-terraform output unravel_keys_location
-```
 
-```
-terraform output unravel_keys_location
-```
-
-
-## Destroy the Resources Created by Terraform
-It is possible to eliminate resources either entirely or partially.
-
-### Removing from Unravel
-To remove projects from Unravel, use the remove command.
-
-```bash
-<Unravel_installation_path>/manager config bigquery remove <project_id>
-<Unravel_installation_path>/manager config apply --restart
-```
 
 ### Removing Unravel Resources from Monitored projects
 Modify the input.tfvars file accordingly to exclude the designated project(s), then proceed to rerun  Terraform.  
@@ -149,10 +111,6 @@ cd bigquery
 terraform destroy --var-file=input.tfvars
 ```
 
-
-## Documentation
-All documentation for Unravel can be found on our webpage:
-https://docs.unraveldata.com
 
 ## Support and Feedback
 If you encounter any issues or have questions during the integration process, don't hesitate to reach out to our support team at support@unraveldata.com. We are here to assist you and ensure a successful setup.
