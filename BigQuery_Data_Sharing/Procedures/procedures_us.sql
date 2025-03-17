@@ -73,7 +73,7 @@ BEGIN
       BEGIN
           EXECUTE IMMEDIATE FORMAT("""
               CREATE OR REPLACE TABLE `%s.%s_%s` AS
-              SELECT *, "%s" as region, "%s" as project FROM `%s.region-%s.INFORMATION_SCHEMA.%s`
+              SELECT *, "%s" as region, "%s" as project FROM `%s.region-%s.INFORMATION_SCHEMA.%s` WHERE 1 = 0
           """, dataset_name, table_name, region, region, project_ids[SAFE_OFFSET(0)], project_ids[SAFE_OFFSET(0)], region, table_name);
       EXCEPTION WHEN ERROR THEN
           RAISE USING MESSAGE = "ERROR: Failed to create " || table_name || " table!";
