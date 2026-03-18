@@ -83,25 +83,6 @@ BEGIN
       END;
 
       --------------------------------------------------------------------------------
-      -- Fetch column list from destination table, excluding added columns
-      --------------------------------------------------------------------------------
-
-      EXECUTE IMMEDIATE FORMAT("""
-        SELECT STRING_AGG(column_name, ', ' ORDER BY ordinal_position)
-        FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
-        WHERE table_catalog = @@project_id
-          AND table_schema = @dataset_name
-          AND table_name = @dest_table_name
-          AND column_name NOT IN ('region', 'project')
-      """, region)
-      INTO col_list
-      USING dataset_name AS dataset_name, dest_table_name AS dest_table_name;
-
-      IF col_list IS NULL THEN
-          RAISE USING MESSAGE = "ERROR: Could not retrieve column list for " || dest_table_name;
-      END IF;
-
-      --------------------------------------------------------------------------------
       -- Insert from each project
       --------------------------------------------------------------------------------
 
@@ -111,6 +92,40 @@ BEGIN
 
           IF project_id IS NULL or project_id = '' THEN
             RAISE USING MESSAGE = "ERROR: project_id is NULL or empty!";
+          END IF;
+
+          -- Step 1: Create a real table from source project's INFORMATION_SCHEMA view (0 rows)
+          EXECUTE IMMEDIATE FORMAT("""
+              CREATE OR REPLACE TABLE `%s.src_cols_temp` AS
+              SELECT * FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
+              LIMIT 0
+          """, dataset_name, project_id, region, table_name);
+
+          -- Step 2: Intersect destination columns with src_cols_temp columns
+          EXECUTE IMMEDIATE FORMAT("""
+              SELECT STRING_AGG(c.column_name, ', ' ORDER BY c.ordinal_position)
+              FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS c
+              WHERE c.table_catalog = '%s'
+                AND c.table_schema = '%s'
+                AND c.table_name = '%s'
+                AND c.column_name NOT IN ('region', 'project')
+                AND c.column_name IN (
+                  SELECT column_name
+                  FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
+                  WHERE table_catalog = '%s'
+                    AND table_schema = '%s'
+                    AND table_name = 'src_cols_temp'
+                )
+          """, region, @@project_id, dataset_name, dest_table_name, region, @@project_id, dataset_name)
+          INTO col_list;
+
+          -- Step 3: Drop the temp table
+          EXECUTE IMMEDIATE FORMAT("""
+              DROP TABLE IF EXISTS `%s.src_cols_temp`
+          """, dataset_name);
+
+          IF col_list IS NULL THEN
+              RAISE USING MESSAGE = "ERROR: Could not retrieve column list for " || dest_table_name || " in project: " || project_id;
           END IF;
 
           BEGIN
