@@ -52,6 +52,16 @@ BEGIN
       -- Create destination table using first project as schema baseline
       --------------------------------------------------------------------------------
 
+      SET baseline_project = (
+           SELECT p
+           FROM UNNEST(project_ids) AS p
+           WHERE p IS NOT NULL AND p != ""
+           LIMIT 1
+      );
+      IF baseline_project IS NULL or baseline_project = '' THEN
+        RAISE USING MESSAGE = "ERROR: No valid baseline project id found in project_ids.";
+      END IF;
+       
       BEGIN
           EXECUTE IMMEDIATE FORMAT("""
               CREATE OR REPLACE TABLE `%s.%s` AS
@@ -77,15 +87,15 @@ BEGIN
       --------------------------------------------------------------------------------
 
       EXECUTE IMMEDIATE FORMAT("""
-    SELECT STRING_AGG(column_name, ', ' ORDER BY ordinal_position)
-    FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
-    WHERE table_catalog = @@project_id
-      AND table_schema = @dataset_name
-      AND table_name = @dest_table_name
-      AND column_name NOT IN ('region', 'project')
-""", region)
-INTO col_list
-USING dataset_name AS dataset_name, dest_table_name AS dest_table_name;
+        SELECT STRING_AGG(column_name, ', ' ORDER BY ordinal_position)
+        FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
+        WHERE table_catalog = @@project_id
+          AND table_schema = @dataset_name
+          AND table_name = @dest_table_name
+          AND column_name NOT IN ('region', 'project')
+      """, region)
+      INTO col_list
+      USING dataset_name AS dataset_name, dest_table_name AS dest_table_name;
 
       IF col_list IS NULL THEN
           RAISE USING MESSAGE = "ERROR: Could not retrieve column list for " || dest_table_name;
@@ -98,6 +108,10 @@ USING dataset_name AS dataset_name, dest_table_name AS dest_table_name;
       FOR project_row IN (SELECT * FROM UNNEST(project_ids)) DO
 
           SET project_id = project_row.f0_;
+
+          IF project_id IS NULL or project_id = '' THEN
+            RAISE USING MESSAGE = "ERROR: project_id is NULL or empty!";
+          END IF;
 
           BEGIN
 
