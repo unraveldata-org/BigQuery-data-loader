@@ -86,6 +86,19 @@ BEGIN
       -- Create destination table using first project as schema baseline
       --------------------------------------------------------------------------------
 
+      DECLARE baseline_project STRING;
+
+      SET baseline_project = (
+          SELECT p
+          FROM UNNEST(project_ids) AS p
+          WHERE p IS NOT NULL AND p != ""
+          LIMIT 1
+      );
+
+      IF baseline_project IS NULL THEN
+          RAISE USING MESSAGE = "ERROR: No valid baseline project id found in project_ids.";
+      END IF;
+
       BEGIN
           EXECUTE IMMEDIATE FORMAT("""
               CREATE OR REPLACE TABLE `%s.%s` AS
@@ -97,7 +110,7 @@ BEGIN
           dataset_name,
           dest_table_name,
           region,
-          project_ids[OFFSET(0)],
+          baseline_project,
           region,
           table_name,
           time_filter);
