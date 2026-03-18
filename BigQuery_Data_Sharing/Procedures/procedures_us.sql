@@ -14,7 +14,7 @@ CREATE OR REPLACE PROCEDURE unravel_share_US.export_billing_data(
 )
 BEGIN
    IF billing_export_project IS NULL THEN
-       RAISE USING MESSAGE = "ERROR: billing_export_project is NULL!";
+       RAISE USING MESSAGE = "ERROR: billing_project is empty!";
    END IF;
 
 
@@ -32,7 +32,7 @@ BEGIN
        EXECUTE IMMEDIATE FORMAT("""
            CREATE TABLE %s.BILLING_TABLE AS
            SELECT * FROM `%s.%s.%s`
-           WHERE export_time BETWEEN TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY) AND CURRENT_TIMESTAMP()
+           WHERE _PARTITIONTIME > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY) AND service.id in ('650B-3C82-34DB', '16B8-3DDA-9F10', 'DCC9-8DB9-673F', '24E6-581D-38E5')
        """, dataset_name, billing_export_project, billing_dataset, billing_table,look_back_days);
    EXCEPTION WHEN ERROR THEN
            RAISE USING MESSAGE = "ERROR: Failed to create BILLING table!";
