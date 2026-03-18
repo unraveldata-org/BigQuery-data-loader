@@ -53,6 +53,7 @@ BEGIN
   DECLARE col_list STRING;
   DECLARE dest_table_name STRING;
   DECLARE time_filter STRING;
+  DECLARE baseline_project STRING;
 
   IF region IS NULL THEN
       RAISE USING MESSAGE = "region is NULL!";
@@ -86,8 +87,6 @@ BEGIN
       -- Create destination table using first project as schema baseline
       --------------------------------------------------------------------------------
 
-      DECLARE baseline_project STRING;
-
       SET baseline_project = (
           SELECT p
           FROM UNNEST(project_ids) AS p
@@ -95,7 +94,7 @@ BEGIN
           LIMIT 1
       );
 
-      IF baseline_project IS NULL THEN
+      IF baseline_project IS NULL or baseline_project = '' THEN
           RAISE USING MESSAGE = "ERROR: No valid baseline project id found in project_ids.";
       END IF;
 
@@ -145,6 +144,10 @@ USING dataset_name AS dataset_name, dest_table_name AS dest_table_name;
       FOR project_row IN (SELECT * FROM UNNEST(project_ids)) DO
 
           SET project_id = project_row.f0_;
+
+          IF project_id IS NULL or project_id = '' THEN
+              RAISE USING MESSAGE = "ERROR: project_id is NULL or empty!";
+          END IF;
 
           BEGIN
 
