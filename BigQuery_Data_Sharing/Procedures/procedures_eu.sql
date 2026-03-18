@@ -19,6 +19,7 @@ BEGIN
   DECLARE col_list STRING;
   DECLARE dest_table_name STRING;
   DECLARE time_filter STRING;
+  DECLARE baseline_project STRING;
 
   IF region IS NULL THEN
       RAISE USING MESSAGE = "region is NULL!";
@@ -73,7 +74,7 @@ BEGIN
           dataset_name,
           dest_table_name,
           region,
-          project_ids[OFFSET(0)],
+          baseline_project,
           region,
           table_name,
           time_filter);
