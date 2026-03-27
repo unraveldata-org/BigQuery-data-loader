@@ -66,7 +66,8 @@ CREATE OR REPLACE PROCEDURE unravel_share_US.export_billing_data_incremental(
   lookback_days          INT64,
   billing_export_project STRING,
   billing_dataset        STRING,
-  billing_table          STRING
+  billing_table          STRING,
+  retention_days         INT64
 )
 BEGIN
 
@@ -84,13 +85,17 @@ BEGIN
   IF billing_table IS NULL OR billing_table = '' THEN
     RAISE USING MESSAGE = "ERROR: billing_table is empty!";
   END IF;
+  IF retention_days IS NULL OR retention_days <= 0 THEN
+    RAISE USING MESSAGE = "retention_days must be > 0!";
+  END IF;
 
   -- Create destination table if first run (partitioned + clustered)
   EXECUTE IMMEDIATE FORMAT("""
     CREATE TABLE IF NOT EXISTS `%s.%s`
     PARTITION BY DATE(export_time)
     AS
-    SELECT * FROM `%s.%s.%s`
+    SELECT *, CURRENT_TIMESTAMP() AS ingestion_ts
+    FROM `%s.%s.%s`
     WHERE FALSE
   """, dataset_name, dest_table,
        billing_export_project, billing_dataset, billing_table);
@@ -101,6 +106,7 @@ BEGIN
       SELECT STRING_AGG(c.column_name, ', ' ORDER BY c.ordinal_position)
       FROM `%s.%s`.INFORMATION_SCHEMA.COLUMNS c
       WHERE c.table_name = '%s'
+        AND c.column_name != 'ingestion_ts'
         AND c.column_name IN (
           SELECT column_name
           FROM `%s`.INFORMATION_SCHEMA.COLUMNS
@@ -142,8 +148,9 @@ BEGIN
   BEGIN
 
     EXECUTE IMMEDIATE FORMAT("""
-      INSERT INTO `%s.%s` (%s)
-      SELECT %s FROM `%s.%s.%s`
+      INSERT INTO `%s.%s` (%s, ingestion_ts)
+      SELECT %s, CURRENT_TIMESTAMP()
+      FROM `%s.%s.%s`
       WHERE export_time >  TIMESTAMP '%s'
         AND export_time <= TIMESTAMP '%s'
         AND service.id IN (
@@ -167,6 +174,19 @@ BEGIN
 
   END;
 
+--Cleanup of tables after the retention period.
+BEGIN
+    EXECUTE IMMEDIATE FORMAT("""
+      DELETE FROM `%s.%s`
+      WHERE ingestion_ts < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
+    """, dataset_name, dest_table, retention_days);
+  EXCEPTION WHEN ERROR THEN
+    INSERT INTO `unravel_share_US.error_log`
+    VALUES (current_run_ts, dest_table, billing_export_project,
+            'Cleanup failed: ' || @@error.message,
+            CURRENT_TIMESTAMP());
+  END;
+
 END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -177,7 +197,8 @@ CREATE OR REPLACE PROCEDURE unravel_share_US.export_metadata_incremental_US(
   lookback_days  INT64,
   tables         ARRAY<STRING>,
   region         STRING,
-  project_ids    ARRAY<STRING>
+  project_ids    ARRAY<STRING>,
+  retention_days INT64
 )
 BEGIN
 
@@ -207,6 +228,8 @@ BEGIN
   IF ARRAY_LENGTH(project_ids) = 0 THEN
     RAISE USING MESSAGE = "project_ids array is empty!";
   END IF;
+  IF retention_days IS NULL OR retention_days <= 0 THEN
+    RAISE USING MESSAGE = "retention_days must be > 0!";
 
   SET baseline_project = (
     SELECT p FROM UNNEST(project_ids) AS p
@@ -242,7 +265,9 @@ BEGIN
         %s
         %s
         AS
-        SELECT *, CAST(NULL AS STRING) AS region, CAST(NULL AS STRING) AS project
+        SELECT *, CAST(NULL AS STRING) AS region,
+               CAST(NULL AS STRING) AS project,
+               CURRENT_TIMESTAMP() AS ingestion_ts
         FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
         LIMIT 0
       """,
@@ -331,7 +356,7 @@ BEGIN
           WHERE c.table_catalog = '%s'
             AND c.table_schema  = '%s'
             AND c.table_name    = '%s'
-            AND c.column_name  NOT IN ('region', 'project')
+            AND c.column_name  NOT IN ('region', 'project', 'ingestion_ts')
             AND c.column_name  IN (
               SELECT column_name
               FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
@@ -418,7 +443,13 @@ BEGIN
 
     END FOR;  -- projects
 
-  END FOR;  -- tables
+--Cleanup of tables after the retention period.
+    EXECUTE IMMEDIATE FORMAT("""
+      DELETE FROM `%s.%s`
+      WHERE ingestion_ts < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
+    """, dataset_name, dest_table_name, retention_days);
+
+  END FOR;
 
 END;
 
