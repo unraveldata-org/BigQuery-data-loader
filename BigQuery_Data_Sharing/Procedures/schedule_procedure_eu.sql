@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS `unravel_share_EU.error_log`
   project_id    STRING,
   error_message STRING,
   logged_at     TIMESTAMP
-);
+)
+PARTITION BY DATE(logged_at)
+CLUSTER BY project_id;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Procedure to create projects_table
@@ -59,84 +61,8 @@ BEGIN
 END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Procedure to incrementally sync billing data
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_EU.export_billing_data_incremental(
-  dataset_name           STRING,
-  lookback_days          INT64,
-  billing_export_project STRING,
-  billing_dataset        STRING,
-  billing_table          STRING
-)
-BEGIN
-
-  DECLARE last_sync_ts   TIMESTAMP;
-  DECLARE current_run_ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
-  DECLARE dest_table     STRING DEFAULT 'BILLING_TABLE';
-
-  IF billing_export_project IS NULL OR billing_export_project = '' THEN
-    RAISE USING MESSAGE = "ERROR: billing_export_project is empty!";
-  END IF;
-  IF billing_dataset IS NULL OR billing_dataset = '' THEN
-    RAISE USING MESSAGE = "ERROR: billing_dataset is empty!";
-  END IF;
-  IF billing_table IS NULL OR billing_table = '' THEN
-    RAISE USING MESSAGE = "ERROR: billing_table is empty!";
-  END IF;
-
-  -- Create destination table if first run (partitioned + clustered)
-  EXECUTE IMMEDIATE FORMAT("""
-    CREATE TABLE IF NOT EXISTS `%s.%s`
-    PARTITION BY DATE(export_time)
-    AS
-    SELECT * FROM `%s.%s.%s`
-    WHERE FALSE
-  """, dataset_name, dest_table,
-       billing_export_project, billing_dataset, billing_table);
-
-  -- Resolve watermark from destination table
-  EXECUTE IMMEDIATE FORMAT("""
-    SELECT MAX(export_time) FROM `%s.%s`
-  """, dataset_name, dest_table)
-  INTO last_sync_ts;
-
-  IF last_sync_ts IS NULL THEN
-    SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY);
-  END IF;
-
-  BEGIN
-
-    EXECUTE IMMEDIATE FORMAT("""
-      INSERT INTO `%s.%s`
-      SELECT * FROM `%s.%s.%s`
-      WHERE export_time >  TIMESTAMP '%s'
-        AND export_time <= TIMESTAMP '%s'
-        AND service.id IN (
-          '650B-3C82-34DB',
-          '16B8-3DDA-9F10',
-          'DCC9-8DB9-673F',
-          '24E6-581D-38E5'
-        )
-    """,
-    dataset_name, dest_table,
-    billing_export_project, billing_dataset, billing_table,
-    FORMAT_TIMESTAMP('%F %T', last_sync_ts),
-    FORMAT_TIMESTAMP('%F %T', current_run_ts));
-
-  EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_EU.error_log`
-      (run_ts, dest_table, project_id, error_message, logged_at)
-    VALUES
-      (current_run_ts, dest_table, billing_export_project, @@error.message, CURRENT_TIMESTAMP());
-
-  END;
-
-END;
-
--- ─────────────────────────────────────────────────────────────────────────────
 -- Procedure to incrementally sync metadata tables
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_EU.export_metadata_incremental_EU(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -156,6 +82,8 @@ BEGIN
   -- DDL strings for partition + cluster per table
   DECLARE partition_clause STRING;
   DECLARE cluster_clause   STRING;
+  DECLARE temp_table_name  STRING;
+  DECLARE run_uuid         STRING DEFAULT REPLACE(GENERATE_UUID(), '-', '_');
 
   IF region IS NULL THEN
     RAISE USING MESSAGE = "region is NULL!";
@@ -238,12 +166,14 @@ BEGIN
 
         EXECUTE IMMEDIATE FORMAT("""
           SELECT MAX(%s) FROM `%s.%s`
+          WHERE project = '%s' AND region = '%s'
         """,
         CASE table_name
           WHEN 'JOBS'          THEN 'creation_time'
           WHEN 'JOBS_TIMELINE' THEN 'job_creation_time'
         END,
-        dataset_name, dest_table_name)
+        dataset_name, dest_table_name,
+        project_id, region)
         INTO last_sync_ts;
 
         IF last_sync_ts IS NULL THEN
@@ -264,13 +194,15 @@ BEGIN
         ELSE "WHERE TRUE"
       END;
 
+      SET temp_table_name = CONCAT('src_cols_temp_', run_uuid);
+
       BEGIN
         -- Step 1: temp table for column intersection
         EXECUTE IMMEDIATE FORMAT("""
-          CREATE OR REPLACE TABLE `%s.src_cols_temp` AS
+          CREATE OR REPLACE TABLE `%s.%s` AS
           SELECT * FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
           LIMIT 0
-        """, dataset_name, project_id, region, table_name);
+        """, dataset_name, temp_table_name, project_id, region, table_name);
       EXCEPTION WHEN ERROR THEN
         INSERT INTO `unravel_share_EU.error_log`
           (run_ts, dest_table, project_id, error_message, logged_at)
@@ -295,12 +227,17 @@ BEGIN
               FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
               WHERE table_catalog = '%s'
                 AND table_schema  = '%s'
-                AND table_name    = 'src_cols_temp'
+                AND table_name    = '%s'
             )
         """, region, @@project_id, dataset_name, dest_table_name,
-             region, @@project_id, dataset_name)
+             region, @@project_id, dataset_name, temp_table_name)
         INTO col_list;
       EXCEPTION WHEN ERROR THEN
+
+        EXECUTE IMMEDIATE FORMAT("""
+          DROP TABLE IF EXISTS `%s.%s`
+        """, dataset_name, temp_table_name);
+
         INSERT INTO `unravel_share_EU.error_log`
           (run_ts, dest_table, project_id, error_message, logged_at)
         VALUES
@@ -310,10 +247,10 @@ BEGIN
         CONTINUE;  -- skip to next project
       END;
 
-        -- Step 3: drop temp table
+        -- Step 3: drop temp table (success path)
         EXECUTE IMMEDIATE FORMAT("""
-          DROP TABLE IF EXISTS `%s.src_cols_temp`
-        """, dataset_name);
+          DROP TABLE IF EXISTS `%s.%s`
+        """, dataset_name, temp_table_name);
 
         IF col_list IS NULL THEN
           INSERT INTO `unravel_share_EU.error_log`
