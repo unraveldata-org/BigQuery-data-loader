@@ -372,8 +372,27 @@ BEGIN
           CONTINUE;  -- skip to next project instead of raising
         END IF;
 
+      -- For non-incremental tables, delete existing rows for this project+region
+      -- to avoid duplicates on re-runs (JOBS/JOBS_TIMELINE use time-based watermarks)
+      IF table_name NOT IN ('JOBS', 'JOBS_TIMELINE') THEN
+        BEGIN
+          EXECUTE IMMEDIATE FORMAT("""
+            DELETE FROM `%s.%s`
+            WHERE project = '%s' AND region = '%s'
+          """, dataset_name, dest_table_name, project_id, region);
+        EXCEPTION WHEN ERROR THEN
+          INSERT INTO `unravel_share_US.error_log`
+            (run_ts, dest_table, project_id, error_message, logged_at)
+          VALUES
+            (current_run_ts, dest_table_name, project_id,
+            'Delete before insert failed: ' || @@error.message,
+            CURRENT_TIMESTAMP());
+          CONTINUE;  -- skip to next project
+        END;
+      END IF;
+
       BEGIN
-        -- Step 4: incremental insert
+        -- Step 4: insert (incremental for JOBS/JOBS_TIMELINE, full replace for others)
         EXECUTE IMMEDIATE FORMAT("""
           INSERT INTO `%s.%s` (%s, region, project)
           SELECT %s, '%s' AS region, '%s' AS project
