@@ -68,7 +68,8 @@ CREATE OR REPLACE PROCEDURE unravel_share_EU.export_metadata_incremental_EU(
   lookback_days  INT64,
   tables         ARRAY<STRING>,
   region         STRING,
-  project_ids    ARRAY<STRING>
+  project_ids    ARRAY<STRING>,
+  retention_days INT64
 )
 BEGIN
 
@@ -86,6 +87,7 @@ BEGIN
   DECLARE temp_table_name  STRING;
   DECLARE run_uuid         STRING DEFAULT REPLACE(GENERATE_UUID(), '-', '_');
 
+  -- validations
   IF region IS NULL THEN
     RAISE USING MESSAGE = "region is NULL!";
   END IF;
@@ -98,6 +100,11 @@ BEGIN
   IF ARRAY_LENGTH(project_ids) = 0 THEN
     RAISE USING MESSAGE = "project_ids array is empty!";
   END IF;
+
+  IF retention_days IS NULL OR retention_days <= 0 THEN
+    RAISE USING MESSAGE = "retention_days must be > 0!";
+  END IF;
+
 
   SET baseline_project = (
     SELECT p FROM UNNEST(project_ids) AS p
@@ -133,7 +140,10 @@ BEGIN
         %s
         %s
         AS
-        SELECT *, CAST(NULL AS STRING) AS region, CAST(NULL AS STRING) AS project
+        SELECT *,
+               CAST(NULL AS STRING) AS region,
+               CAST(NULL AS STRING) AS project,
+               CURRENT_TIMESTAMP() AS ingestion_ts
         FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
         LIMIT 0
       """,
@@ -222,7 +232,7 @@ BEGIN
           WHERE c.table_catalog = '%s'
             AND c.table_schema  = '%s'
             AND c.table_name    = '%s'
-            AND c.column_name  NOT IN ('region', 'project')
+            AND c.column_name  NOT IN ('region', 'project', 'ingestion_ts')
             AND c.column_name  IN (
               SELECT column_name
               FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
@@ -307,9 +317,24 @@ BEGIN
         CONTINUE;  -- skip to next project
       END;
 
-    END FOR;  -- projects
+    END FOR;  
+    --Cleanup of tables after the retention period.
+    BEGIN
+      EXECUTE IMMEDIATE FORMAT("""
+        DELETE FROM `%s.%s`
+        WHERE ingestion_ts < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
+      """,
+      dataset_name,
+      dest_table_name,
+      retention_days);
+    EXCEPTION WHEN ERROR THEN
+      INSERT INTO `unravel_share_EU.error_log`
+      VALUES (current_run_ts, dest_table_name, NULL,
+              'Cleanup delete failed: ' || @@error.message,
+              CURRENT_TIMESTAMP());
+    END;
 
-  END FOR;  -- tables
+  END FOR;  -- tables loop
 
 END;
 
