@@ -230,6 +230,7 @@ BEGIN
   END IF;
   IF retention_days IS NULL OR retention_days <= 0 THEN
     RAISE USING MESSAGE = "retention_days must be > 0!";
+  END IF;
 
   SET baseline_project = (
     SELECT p FROM UNNEST(project_ids) AS p
@@ -443,7 +444,7 @@ BEGIN
 
     END FOR;  -- projects
 
---Cleanup of tables after the retention period.
+    --Cleanup of tables after the retention period.
     EXECUTE IMMEDIATE FORMAT("""
       DELETE FROM `%s.%s`
       WHERE ingestion_ts < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
@@ -461,7 +462,8 @@ CREATE OR REPLACE PROCEDURE unravel_share_US.export_metadata_incremental_US_all_
   lookback_days  INT64,
   tables         ARRAY<STRING>,
   region         STRING,
-  projects_table STRING
+  projects_table STRING,
+  retention_days INT64
 )
 BEGIN
 
@@ -483,7 +485,8 @@ BEGIN
     lookback_days,
     tables,
     region,
-    project_ids
+    project_ids,
+    retention_days
   );
 
 END;
