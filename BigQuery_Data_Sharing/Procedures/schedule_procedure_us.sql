@@ -3,6 +3,9 @@ SET @@location = 'US';
 CREATE SCHEMA IF NOT EXISTS unravel_share_US
   OPTIONS (location = 'US');
 
+CREATE SCHEMA IF NOT EXISTS unravel_share_US_projects_list
+  OPTIONS (location = 'US');
+
 CREATE TABLE IF NOT EXISTS `unravel_share_US.error_log`
 (
   run_ts        TIMESTAMP,
@@ -10,12 +13,14 @@ CREATE TABLE IF NOT EXISTS `unravel_share_US.error_log`
   project_id    STRING,
   error_message STRING,
   logged_at     TIMESTAMP
-);
+)
+PARTITION BY DATE(logged_at)
+CLUSTER BY project_id;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Procedure to create projects_table
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_US.create_projects_table(
+CREATE OR REPLACE PROCEDURE unravel_share_US_projects_list.create_projects_table(
   dataset_name           STRING,
   billing_export_project STRING,
   billing_dataset        STRING,
@@ -49,7 +54,7 @@ BEGIN
     billing_export_project, billing_dataset, billing_table);
 
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_US.error_log`
+    INSERT INTO `unravel_share_US_copy_metadata.error_log`
       (run_ts, dest_table, project_id, error_message, logged_at)
     VALUES
       (CURRENT_TIMESTAMP(), 'projects_table', billing_export_project, @@error.message, CURRENT_TIMESTAMP());
@@ -85,19 +90,19 @@ BEGIN
   IF billing_table IS NULL OR billing_table = '' THEN
     RAISE USING MESSAGE = "ERROR: billing_table is empty!";
   END IF;
-  IF retention_days IS NULL OR retention_days <= 0 THEN
-    RAISE USING MESSAGE = "retention_days must be > 0!";
-  END IF;
 
   -- Create destination table if first run (partitioned + clustered)
   EXECUTE IMMEDIATE FORMAT("""
     CREATE TABLE IF NOT EXISTS `%s.%s`
     PARTITION BY DATE(export_time)
+    OPTIONS (
+      partition_expiration_days = %d
+    )
     AS
     SELECT *, CURRENT_TIMESTAMP() AS ingestion_ts
     FROM `%s.%s.%s`
     WHERE FALSE
-  """, dataset_name, dest_table,
+  """, dataset_name, dest_table, retention_days,
        billing_export_project, billing_dataset, billing_table);
 
 
@@ -174,19 +179,6 @@ BEGIN
 
   END;
 
---Cleanup of tables after the retention period.
-BEGIN
-    EXECUTE IMMEDIATE FORMAT("""
-      DELETE FROM `%s.%s`
-      WHERE ingestion_ts < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
-    """, dataset_name, dest_table, retention_days);
-  EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_US.error_log`
-    VALUES (current_run_ts, dest_table, billing_export_project,
-            'Cleanup failed: ' || @@error.message,
-            CURRENT_TIMESTAMP());
-  END;
-
 END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -228,9 +220,6 @@ BEGIN
   IF ARRAY_LENGTH(project_ids) = 0 THEN
     RAISE USING MESSAGE = "project_ids array is empty!";
   END IF;
-  IF retention_days IS NULL OR retention_days <= 0 THEN
-    RAISE USING MESSAGE = "retention_days must be > 0!";
-  END IF;
 
   SET baseline_project = (
     SELECT p FROM UNNEST(project_ids) AS p
@@ -265,6 +254,7 @@ BEGIN
         CREATE TABLE IF NOT EXISTS `%s.%s`
         %s
         %s
+        %s
         AS
         SELECT *, CAST(NULL AS STRING) AS region,
                CAST(NULL AS STRING) AS project,
@@ -275,6 +265,9 @@ BEGIN
       dataset_name, dest_table_name,
       partition_clause,
       cluster_clause,
+      IF(partition_clause != '',
+           FORMAT('OPTIONS (partition_expiration_days = %d)', retention_days),
+           ''),
       baseline_project, region, table_name);
     EXCEPTION WHEN ERROR THEN
       INSERT INTO `unravel_share_US.error_log`
@@ -444,12 +437,6 @@ BEGIN
 
     END FOR;  -- projects
 
-    --Cleanup of tables after the retention period.
-    EXECUTE IMMEDIATE FORMAT("""
-      DELETE FROM `%s.%s`
-      WHERE ingestion_ts < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
-    """, dataset_name, dest_table_name, retention_days);
-
   END FOR;
 
 END;
@@ -472,8 +459,8 @@ BEGIN
   -- FIX: added opening parenthesis and dataset prefix
   EXECUTE IMMEDIATE FORMAT("""
     SELECT ARRAY_AGG(project_id IGNORE NULLS)
-    FROM `%s.%s`
-  """, dataset_name, projects_table)
+    FROM `%s`
+  """, projects_table)
   INTO project_ids;
 
   IF project_ids IS NULL OR ARRAY_LENGTH(project_ids) = 0 THEN
