@@ -15,52 +15,6 @@ PARTITION BY DATE(logged_at)
 CLUSTER BY project_id;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Procedure to create projects_table
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_EU.create_projects_table(
-  dataset_name           STRING,
-  billing_export_project STRING,
-  billing_dataset        STRING,
-  billing_table          STRING
-)
-BEGIN
-
-  IF billing_export_project IS NULL OR billing_export_project = '' THEN
-    RAISE USING MESSAGE = "ERROR: billing_export_project is empty!";
-  END IF;
-  IF billing_dataset IS NULL OR billing_dataset = '' THEN
-    RAISE USING MESSAGE = "ERROR: billing_dataset is empty!";
-  END IF;
-  IF billing_table IS NULL OR billing_table = '' THEN
-    RAISE USING MESSAGE = "ERROR: billing_table is empty!";
-  END IF;
-
-  BEGIN
-    EXECUTE IMMEDIATE FORMAT("""
-      CREATE OR REPLACE TABLE `%s.projects_table` AS
-      SELECT DISTINCT project.id AS project_id
-      FROM `%s.%s.%s`
-      WHERE service.id IN (
-        '650B-3C82-34DB',
-        '16B8-3DDA-9F10',
-        'DCC9-8DB9-673F',
-        '24E6-581D-38E5'
-      )
-    """,
-    dataset_name,
-    billing_export_project, billing_dataset, billing_table);
-
-  EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_EU.error_log`
-      (run_ts, dest_table, project_id, error_message, logged_at)
-    VALUES
-      (CURRENT_TIMESTAMP(), 'projects_table', billing_export_project, @@error.message, CURRENT_TIMESTAMP());
-
-  END;
-
-END;
-
--- ─────────────────────────────────────────────────────────────────────────────
 -- Procedure to incrementally sync metadata tables
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_EU.export_metadata_incremental_EU(
@@ -101,10 +55,6 @@ BEGIN
     RAISE USING MESSAGE = "project_ids array is empty!";
   END IF;
 
-  IF retention_days IS NULL OR retention_days <= 0 THEN
-    RAISE USING MESSAGE = "retention_days must be > 0!";
-  END IF;
-
 
   SET baseline_project = (
     SELECT p FROM UNNEST(project_ids) AS p
@@ -139,6 +89,7 @@ BEGIN
         CREATE TABLE IF NOT EXISTS `%s.%s`
         %s
         %s
+        %s
         AS
         SELECT *,
                CAST(NULL AS STRING) AS region,
@@ -150,6 +101,9 @@ BEGIN
       dataset_name, dest_table_name,
       partition_clause,
       cluster_clause,
+      IF(partition_clause != '',
+           FORMAT('OPTIONS (partition_expiration_days = %d)', retention_days),
+           ''),
       baseline_project, region, table_name);
     EXCEPTION WHEN ERROR THEN
       INSERT INTO `unravel_share_EU.error_log`
@@ -317,22 +271,7 @@ BEGIN
         CONTINUE;  -- skip to next project
       END;
 
-    END FOR;  
-    --Cleanup of tables after the retention period.
-    BEGIN
-      EXECUTE IMMEDIATE FORMAT("""
-        DELETE FROM `%s.%s`
-        WHERE ingestion_ts < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
-      """,
-      dataset_name,
-      dest_table_name,
-      retention_days);
-    EXCEPTION WHEN ERROR THEN
-      INSERT INTO `unravel_share_EU.error_log`
-      VALUES (current_run_ts, dest_table_name, NULL,
-              'Cleanup delete failed: ' || @@error.message,
-              CURRENT_TIMESTAMP());
-    END;
+    END FOR;
 
   END FOR;  -- tables loop
 
@@ -346,17 +285,17 @@ CREATE OR REPLACE PROCEDURE unravel_share_EU.export_metadata_incremental_EU_all_
   lookback_days  INT64,
   tables         ARRAY<STRING>,
   region         STRING,
-  projects_table STRING
+  projects_table STRING,
+  retention_days INT64
 )
 BEGIN
 
   DECLARE project_ids ARRAY<STRING>;
 
-  -- FIX: added opening parenthesis and dataset prefix
   EXECUTE IMMEDIATE FORMAT("""
     SELECT ARRAY_AGG(project_id IGNORE NULLS)
-    FROM `%s.%s`
-  """, dataset_name, projects_table)
+    FROM `%s`
+  """, projects_table)
   INTO project_ids;
 
   IF project_ids IS NULL OR ARRAY_LENGTH(project_ids) = 0 THEN
@@ -368,7 +307,8 @@ BEGIN
     lookback_days,
     tables,
     region,
-    project_ids
+    project_ids,
+    retention_days
   );
 
 END;
