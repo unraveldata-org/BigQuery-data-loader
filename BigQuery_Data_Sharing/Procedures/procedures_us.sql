@@ -5,6 +5,53 @@ CREATE SCHEMA IF NOT EXISTS unravel_share_US
       location = 'US'
   );
 
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Procedure to create projects_table
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE PROCEDURE unravel_share_US_projects_list.create_projects_table(
+  dataset_name           STRING,
+  billing_export_project STRING,
+  billing_dataset        STRING,
+  billing_table          STRING
+)
+BEGIN
+
+  IF billing_export_project IS NULL OR billing_export_project = '' THEN
+    RAISE USING MESSAGE = "ERROR: billing_export_project is empty!";
+  END IF;
+  IF billing_dataset IS NULL OR billing_dataset = '' THEN
+    RAISE USING MESSAGE = "ERROR: billing_dataset is empty!";
+  END IF;
+  IF billing_table IS NULL OR billing_table = '' THEN
+    RAISE USING MESSAGE = "ERROR: billing_table is empty!";
+  END IF;
+
+  BEGIN
+    EXECUTE IMMEDIATE FORMAT("""
+      CREATE OR REPLACE TABLE `%s.projects_table` AS
+      SELECT DISTINCT project.id AS project_id
+      FROM `%s.%s.%s`
+      WHERE service.id IN (
+        '650B-3C82-34DB',
+        '16B8-3DDA-9F10',
+        'DCC9-8DB9-673F',
+        '24E6-581D-38E5'
+      )
+    """,
+    dataset_name,
+    billing_export_project, billing_dataset, billing_table);
+
+  EXCEPTION WHEN ERROR THEN
+    INSERT INTO `unravel_share_US_copy_metadata.error_log`
+      (run_ts, dest_table, project_id, error_message, logged_at)
+    VALUES
+      (CURRENT_TIMESTAMP(), 'projects_table', billing_export_project, @@error.message, CURRENT_TIMESTAMP());
+
+  END;
+
+END;
+
 CREATE OR REPLACE PROCEDURE unravel_share_US.export_billing_data(
   dataset_name STRING,
   look_back_days INT64,
@@ -192,5 +239,40 @@ BEGIN
       END FOR;
 
   END FOR;
+
+END;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Wrapper: resolves project_ids from projects_table then calls main procedure
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE PROCEDURE unravel_share_US.export_metadata_US_all_projects(
+  dataset_name   STRING,
+  lookback_days  INT64,
+  tables         ARRAY<STRING>,
+  region         STRING,
+  projects_table STRING
+)
+BEGIN
+
+  DECLARE project_ids ARRAY<STRING>;
+
+  EXECUTE IMMEDIATE FORMAT("""
+    SELECT ARRAY_AGG(project_id IGNORE NULLS)
+    FROM `%s`
+  """, projects_table)
+  INTO project_ids;
+
+  IF project_ids IS NULL OR ARRAY_LENGTH(project_ids) = 0 THEN
+    RAISE USING MESSAGE = "ERROR: No rows present in: " || projects_table;
+  END IF;
+
+  CALL unravel_share_US.export_metadata_US(
+    dataset_name,
+    lookback_days,
+    tables,
+    region,
+    project_ids
+  );
 
 END;
