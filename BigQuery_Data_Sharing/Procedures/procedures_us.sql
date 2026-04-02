@@ -5,6 +5,11 @@ CREATE SCHEMA IF NOT EXISTS unravel_share_US
       location = 'US'
   );
 
+CREATE SCHEMA IF NOT EXISTS unravel_share_US_projects_list
+  OPTIONS (
+      location = 'US'
+  );
+
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Procedure to create projects_table
@@ -29,7 +34,7 @@ BEGIN
 
   BEGIN
     EXECUTE IMMEDIATE FORMAT("""
-      CREATE TABLE IF NOT EXIST `%s.projects_table` AS
+      CREATE TABLE IF NOT EXISTS `%s.projects_table` AS
       SELECT DISTINCT project.id AS project_id
       FROM `%s.%s.%s`
       WHERE service.id IN (
@@ -43,11 +48,7 @@ BEGIN
     billing_export_project, billing_dataset, billing_table);
 
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_US_copy_metadata.error_log`
-      (run_ts, dest_table, project_id, error_message, logged_at)
-    VALUES
-      (CURRENT_TIMESTAMP(), 'projects_table', billing_export_project, @@error.message, CURRENT_TIMESTAMP());
-
+     RAISE USING MESSAGE = "ERROR: Failed to create projects_table!";
   END;
 
 END;
@@ -77,7 +78,7 @@ BEGIN
 
    BEGIN
        EXECUTE IMMEDIATE FORMAT("""
-           CREATE TABLE IF NOT EXIST %s.BILLING_TABLE AS
+           CREATE TABLE IF NOT EXISTS %s.BILLING_TABLE AS
            SELECT * FROM `%s.%s.%s`
            WHERE _PARTITIONTIME > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY) AND service.id in ('650B-3C82-34DB', '16B8-3DDA-9F10', 'DCC9-8DB9-673F', '24E6-581D-38E5')
        """, dataset_name, billing_export_project, billing_dataset, billing_table,look_back_days);
@@ -147,7 +148,7 @@ BEGIN
 
       BEGIN
           EXECUTE IMMEDIATE FORMAT("""
-              CREATE TABLE IF NOT EXIST `%s.%s` AS
+              CREATE TABLE IF NOT EXISTS `%s.%s` AS
               SELECT *, "%s" AS region, "" AS project
               FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
               %s
