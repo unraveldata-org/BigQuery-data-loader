@@ -259,8 +259,9 @@ BEGIN
   DECLARE project_ids ARRAY<STRING>;
 
   EXECUTE IMMEDIATE FORMAT("""
-    SELECT ARRAY_AGG(project_id IGNORE NULLS)
+    SELECT ARRAY_AGG(DISTINCT project_id)
     FROM `%s`
+    WHERE project_id IS NOT NULL AND project_id != ''
   """, projects_table)
   INTO project_ids;
 
