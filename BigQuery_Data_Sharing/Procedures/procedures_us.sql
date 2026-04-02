@@ -29,7 +29,7 @@ BEGIN
 
   BEGIN
     EXECUTE IMMEDIATE FORMAT("""
-      CREATE OR REPLACE TABLE `%s.projects_table` AS
+      CREATE TABLE IF NOT EXIST `%s.projects_table` AS
       SELECT DISTINCT project.id AS project_id
       FROM `%s.%s.%s`
       WHERE service.id IN (
@@ -77,7 +77,7 @@ BEGIN
 
    BEGIN
        EXECUTE IMMEDIATE FORMAT("""
-           CREATE TABLE %s.BILLING_TABLE AS
+           CREATE TABLE IF NOT EXIST %s.BILLING_TABLE AS
            SELECT * FROM `%s.%s.%s`
            WHERE _PARTITIONTIME > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY) AND service.id in ('650B-3C82-34DB', '16B8-3DDA-9F10', 'DCC9-8DB9-673F', '24E6-581D-38E5')
        """, dataset_name, billing_export_project, billing_dataset, billing_table,look_back_days);
@@ -147,7 +147,7 @@ BEGIN
 
       BEGIN
           EXECUTE IMMEDIATE FORMAT("""
-              CREATE OR REPLACE TABLE `%s.%s` AS
+              CREATE TABLE IF NOT EXIST `%s.%s` AS
               SELECT *, "%s" AS region, "" AS project
               FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
               %s
