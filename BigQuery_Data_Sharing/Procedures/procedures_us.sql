@@ -259,6 +259,7 @@ BEGIN
               SET err_msg = @@error.message;
               INSERT INTO `unravel_share_US.error_log` (run_ts, dest_table, project_id, error_message, logged_at)
               VALUES (run_start_ts, dest_table_name, project_id, err_msg, CURRENT_TIMESTAMP());
+              CONTINUE;
           END;
 
       END FOR;
