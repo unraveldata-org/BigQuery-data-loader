@@ -102,6 +102,10 @@ BEGIN
   DECLARE dest_table_name STRING;
   DECLARE time_filter STRING;
   DECLARE baseline_project STRING;
+  DECLARE err_msg STRING;
+  DECLARE run_start_ts TIMESTAMP;
+
+  SET run_start_ts = CURRENT_TIMESTAMP();
 
   IF region IS NULL THEN
       RAISE USING MESSAGE = "region is NULL!";
@@ -118,6 +122,18 @@ BEGIN
   IF ARRAY_LENGTH(project_ids) = 0 THEN
       RAISE USING MESSAGE = "project_ids array is empty!";
   END IF;
+
+  -- Create error_log table if it doesn't exist
+  CREATE TABLE IF NOT EXISTS `unravel_share_US.error_log`
+  (
+    run_ts        TIMESTAMP,
+    dest_table    STRING,
+    project_id    STRING,
+    error_message STRING,
+    logged_at     TIMESTAMP
+  )
+  PARTITION BY DATE(logged_at)
+  CLUSTER BY project_id;
 
   FOR table_row IN (SELECT * FROM UNNEST(tables)) DO
 
@@ -163,7 +179,11 @@ BEGIN
           time_filter);
 
       EXCEPTION WHEN ERROR THEN
-          RAISE USING MESSAGE = "ERROR: Failed to create " || dest_table_name || " table!";
+          SET err_msg = @@error.message;
+          INSERT INTO `unravel_share_US.error_log` (run_ts, dest_table, project_id, error_message, logged_at)
+          VALUES (run_start_ts, dest_table_name, baseline_project, err_msg, CURRENT_TIMESTAMP());
+
+          CONTINUE;  -- skip to next table since dest table couldn't be created
       END;
 
       --------------------------------------------------------------------------------
@@ -174,10 +194,13 @@ BEGIN
 
           SET project_id = project_row.f0_;
 
-          IF project_id IS NULL or project_id = '' THEN
-              RAISE USING MESSAGE = "ERROR: project_id is NULL or empty!";
+          IF project_id IS NULL OR project_id = '' THEN
+              INSERT INTO `unravel_share_US.error_log` (run_ts, dest_table, project_id, error_message, logged_at)
+              VALUES (run_start_ts, dest_table_name, '', 'project_id is NULL or empty', CURRENT_TIMESTAMP());
+              CONTINUE;
           END IF;
 
+       BEGIN
           -- Step 1: Create a real table from source project's INFORMATION_SCHEMA view (0 rows)
           EXECUTE IMMEDIATE FORMAT("""
               CREATE OR REPLACE TABLE `%s.src_cols_temp` AS
@@ -208,13 +231,14 @@ BEGIN
               DROP TABLE IF EXISTS `%s.src_cols_temp`
           """, dataset_name);
 
-          IF col_list IS NULL THEN
-              RAISE USING MESSAGE = "ERROR: Could not retrieve column list for " || dest_table_name || " in project: " || project_id;
-          END IF;
+              IF col_list IS NULL THEN
+                  INSERT INTO `unravel_share_US.error_log` (run_ts, dest_table, project_id, error_message, logged_at)
+                  VALUES (run_start_ts, dest_table_name, project_id, 'Could not retrieve column list', CURRENT_TIMESTAMP());
+                  CONTINUE;
+              END IF;
 
-          BEGIN
-
-          EXECUTE IMMEDIATE FORMAT("""
+              -- Step 4: Insert data
+              EXECUTE IMMEDIATE FORMAT("""
                   INSERT INTO `%s.%s` (%s, region, project)
                   SELECT %s, "%s" AS region, "%s" AS project
                   FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
@@ -232,9 +256,9 @@ BEGIN
               time_filter);
 
           EXCEPTION WHEN ERROR THEN
-              RAISE USING MESSAGE =
-                  "ERROR: Failed to insert into " || table_name ||
-                  " for project: " || project_id;
+              SET err_msg = @@error.message;
+              INSERT INTO `unravel_share_US.error_log` (run_ts, dest_table, project_id, error_message, logged_at)
+              VALUES (run_start_ts, dest_table_name, project_id, err_msg, CURRENT_TIMESTAMP());
           END;
 
       END FOR;
@@ -242,7 +266,6 @@ BEGIN
   END FOR;
 
 END;
-
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Wrapper: resolves project_ids from projects_table then calls main procedure
