@@ -252,8 +252,8 @@ BEGIN
 
         SET time_filter = FORMAT(
           "WHERE %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
-          time_col, FORMAT_TIMESTAMP('%F %T', last_sync_ts),
-          time_col, FORMAT_TIMESTAMP('%F %T', current_run_ts));
+          time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_sync_ts),
+          time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
 
       ELSE
         SET time_filter = 'WHERE TRUE';

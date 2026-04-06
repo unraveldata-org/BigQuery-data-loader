@@ -179,8 +179,8 @@ BEGIN
   dataset_name, dest_table, billing_col_list,
   billing_col_list,
   billing_export_project, billing_dataset, billing_table,
-  FORMAT_TIMESTAMP('%F %T', last_sync_ts),
-  FORMAT_TIMESTAMP('%F %T', current_run_ts));
+  FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_sync_ts),
+  FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
 
   BEGIN
     EXECUTE IMMEDIATE exec_sql;
@@ -430,8 +430,8 @@ BEGIN
 
         SET time_filter = FORMAT(
           "WHERE %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
-          time_col, FORMAT_TIMESTAMP('%F %T', last_sync_ts),
-          time_col, FORMAT_TIMESTAMP('%F %T', current_run_ts));
+          time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_sync_ts),
+          time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
 
       ELSE
         SET time_filter = 'WHERE TRUE';
