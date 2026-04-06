@@ -65,38 +65,134 @@ BEGIN
 
 END;
 
-CREATE OR REPLACE PROCEDURE unravel_share_US.export_billing_data(
-  dataset_name STRING,
-  look_back_days INT64,
+CREATE OR REPLACE PROCEDURE unravel_share_US.export_billing_data_incremental(
+  dataset_name           STRING,
+  look_back_days         INT64,
   billing_export_project STRING,
-  billing_dataset STRING,
-  billing_table STRING
+  billing_dataset        STRING,
+  billing_table          STRING,
+  retention_days         INT64
 )
 BEGIN
-   IF billing_export_project IS NULL THEN
-       RAISE USING MESSAGE = "ERROR: billing_project is empty!";
-   END IF;
 
+  DECLARE exec_sql        STRING;
+  DECLARE last_sync_ts    TIMESTAMP;
+  DECLARE current_run_ts  TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
+  DECLARE dest_table      STRING DEFAULT 'BILLING_TABLE';
+  DECLARE billing_col_list STRING;
 
-   IF billing_dataset IS NULL THEN
-       RAISE USING MESSAGE = "billing_dataset is empty!";
-   END IF;
+  IF billing_export_project IS NULL OR billing_export_project = '' THEN
+    RAISE USING MESSAGE = "ERROR: billing_export_project is empty!";
+  END IF;
+  IF billing_dataset IS NULL OR billing_dataset = '' THEN
+    RAISE USING MESSAGE = "ERROR: billing_dataset is empty!";
+  END IF;
+  IF billing_table IS NULL OR billing_table = '' THEN
+    RAISE USING MESSAGE = "ERROR: billing_table is empty!";
+  END IF;
 
+  -- ─── Step 1: Create destination table if first run ───
+  SET exec_sql = FORMAT("""
+    CREATE TABLE IF NOT EXISTS `%s.%s`
+    PARTITION BY DATE(export_time)
+    OPTIONS (partition_expiration_days = %d)
+    AS
+    SELECT *, CURRENT_TIMESTAMP() AS ingestion_ts
+    FROM `%s.%s.%s`
+    WHERE FALSE
+  """, dataset_name, dest_table, retention_days,
+       billing_export_project, billing_dataset, billing_table);
 
-   IF billing_table IS NULL THEN
-       RAISE USING MESSAGE = "billing_table is empty!";
-   END IF;
+  BEGIN
+    EXECUTE IMMEDIATE exec_sql;
+  EXCEPTION WHEN ERROR THEN
+    INSERT INTO `unravel_share_US.error_log`
+      (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+    VALUES
+      (current_run_ts, dest_table, billing_export_project,
+       'Billing DDL failed: ' || @@error.message,
+       exec_sql, CURRENT_TIMESTAMP());
+    RETURN;
+  END;
 
+  -- ─── Step 2: Resolve common columns between source and destination ───
+  SET exec_sql = FORMAT("""
+    SELECT STRING_AGG(c.column_name, ', ' ORDER BY c.ordinal_position)
+    FROM `%s.%s`.INFORMATION_SCHEMA.COLUMNS c
+    WHERE c.table_name = '%s'
+      AND c.column_name != 'ingestion_ts'
+      AND c.column_name IN (
+        SELECT column_name
+        FROM `%s`.INFORMATION_SCHEMA.COLUMNS
+        WHERE table_name = '%s'
+      )
+  """,
+  billing_export_project, billing_dataset, billing_table,
+  dataset_name, dest_table);
 
-   BEGIN
-       EXECUTE IMMEDIATE FORMAT("""
-           CREATE TABLE IF NOT EXISTS %s.BILLING_TABLE AS
-           SELECT * FROM `%s.%s.%s`
-           WHERE _PARTITIONTIME > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY) AND service.id in ('650B-3C82-34DB', '16B8-3DDA-9F10', 'DCC9-8DB9-673F', '24E6-581D-38E5')
-       """, dataset_name, billing_export_project, billing_dataset, billing_table,look_back_days);
-   EXCEPTION WHEN ERROR THEN
-           RAISE USING MESSAGE = "ERROR: Failed to create BILLING table!";
-   END;
+  BEGIN
+    EXECUTE IMMEDIATE exec_sql INTO billing_col_list;
+  EXCEPTION WHEN ERROR THEN
+    INSERT INTO `unravel_share_US.error_log`
+      (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+    VALUES
+      (current_run_ts, dest_table, billing_export_project,
+       'Billing col_list resolution failed: ' || @@error.message,
+       exec_sql, CURRENT_TIMESTAMP());
+    RETURN;
+  END;
+
+  IF billing_col_list IS NULL THEN
+    INSERT INTO `unravel_share_US.error_log`
+      (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+    VALUES
+      (current_run_ts, dest_table, billing_export_project,
+       'billing_col_list is NULL – no column overlap between source and destination',
+       NULL, CURRENT_TIMESTAMP());
+    RETURN;
+  END IF;
+
+  -- ─── Step 3: Find watermark (last synced export_time) ───
+  EXECUTE IMMEDIATE FORMAT("""
+    SELECT MAX(export_time) FROM `%s.%s`
+  """, dataset_name, dest_table)
+  INTO last_sync_ts;
+
+  IF last_sync_ts IS NULL THEN
+    SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL look_back_days DAY);
+  END IF;
+
+  -- ─── Step 4: Incremental insert ───
+  SET exec_sql = FORMAT("""
+    INSERT INTO `%s.%s` (%s, ingestion_ts)
+    SELECT %s, CURRENT_TIMESTAMP()
+    FROM `%s.%s.%s`
+    WHERE export_time >  TIMESTAMP '%s'
+      AND export_time <= TIMESTAMP '%s'
+      AND service.id IN (
+        '650B-3C82-34DB',
+        '16B8-3DDA-9F10',
+        'DCC9-8DB9-673F',
+        '24E6-581D-38E5'
+      )
+  """,
+  dataset_name, dest_table, billing_col_list,
+  billing_col_list,
+  billing_export_project, billing_dataset, billing_table,
+  FORMAT_TIMESTAMP('%F %T', last_sync_ts),
+  FORMAT_TIMESTAMP('%F %T', current_run_ts));
+
+  BEGIN
+    EXECUTE IMMEDIATE exec_sql;
+  EXCEPTION WHEN ERROR THEN
+    INSERT INTO `unravel_share_US.error_log`
+      (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+    VALUES
+      (current_run_ts, dest_table, billing_export_project,
+       'Billing incremental insert failed: ' || @@error.message,
+       exec_sql, CURRENT_TIMESTAMP());
+  END;
+
 END;
 
 
