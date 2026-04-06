@@ -46,7 +46,7 @@ BEGIN
 
   BEGIN
     EXECUTE IMMEDIATE FORMAT("""
-      CREATE TABLE IF NOT EXISTS `%s.projects_table` AS
+      CREATE OR REPLACE TABLE `%s.projects_table` AS
       SELECT DISTINCT project.id AS project_id
       FROM `%s.%s.%s`
       WHERE service.id IN (
