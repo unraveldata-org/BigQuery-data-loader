@@ -143,7 +143,7 @@ BEGIN
   DECLARE staging_has_rows INT64;
 
   -- Batching variables
-  DECLARE batch_size       INT64 DEFAULT 20;
+  DECLARE batch_size       INT64 DEFAULT 500;
   DECLARE batch_count      INT64;
   DECLARE batch_number     INT64;
   DECLARE staging_table    STRING;
