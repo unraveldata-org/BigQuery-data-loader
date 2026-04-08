@@ -307,13 +307,15 @@ BEGIN
       -- Check if any staging table has rows
       SET staging_has_rows = 0;
       FOR stg_row IN (SELECT * FROM UNNEST(staging_tables)) DO
-        SET st = stg_row.f0_;
-        EXECUTE IMMEDIATE FORMAT("""
-          SELECT COUNT(*) FROM `%s.%s` LIMIT 1
-        """, dataset_name, st)
-        INTO staging_has_rows;
-        IF staging_has_rows > 0 THEN
-          SET staging_has_rows = 1;
+        IF staging_has_rows = 0 THEN
+          SET st = stg_row.f0_;
+          EXECUTE IMMEDIATE FORMAT("""
+            SELECT COUNT(*) FROM `%s.%s` LIMIT 1
+          """, dataset_name, st)
+          INTO staging_has_rows;
+          IF staging_has_rows > 0 THEN
+            SET staging_has_rows = 1;
+          END IF;
         END IF;
       END FOR;
 
