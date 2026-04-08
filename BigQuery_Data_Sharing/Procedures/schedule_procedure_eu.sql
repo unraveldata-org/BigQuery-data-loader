@@ -352,8 +352,9 @@ BEGIN
 
         -- ─── Single INSERT: all staging tables → destination ───
         SET exec_sql = FORMAT("""
-          INSERT INTO `%s.%s` (%s, region, project)
-          %s
+          INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
+          SELECT src.*, CURRENT_TIMESTAMP()
+          FROM (%s) AS src
         """, dataset_name, dest_table_name, col_list, flush_sql);
 
         BEGIN
