@@ -5,7 +5,7 @@ CREATE SCHEMA IF NOT EXISTS unravel_share_us_partitioned
       location = 'US'
   );
 
-CREATE SCHEMA IF NOT EXISTS unravel_share_US_projects_list
+CREATE SCHEMA IF NOT EXISTS unravel_share_us_projects_list
   OPTIONS (
       location = 'US'
   );
@@ -161,7 +161,7 @@ END;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Procedure to create projects_table
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_US_projects_list.create_projects_table(
+CREATE OR REPLACE PROCEDURE unravel_share_us_projects_list.create_projects_table(
   dataset_name           STRING,
   billing_export_project STRING,
   billing_dataset        STRING,
