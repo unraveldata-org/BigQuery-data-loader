@@ -1,6 +1,6 @@
 SET @@location = 'US';
 
-CREATE SCHEMA IF NOT EXISTS unravel_share_US
+CREATE SCHEMA IF NOT EXISTS unravel_share_us_partitioned
   OPTIONS (
       location = 'US'
   );
@@ -11,7 +11,7 @@ CREATE SCHEMA IF NOT EXISTS unravel_share_US_projects_list
   );
 
 
-CREATE TABLE IF NOT EXISTS `unravel_share_US.error_log`
+CREATE TABLE IF NOT EXISTS `unravel_share_us_partitioned.error_log`
 (
   run_ts        TIMESTAMP,
   dest_table    STRING,
@@ -22,6 +22,141 @@ CREATE TABLE IF NOT EXISTS `unravel_share_US.error_log`
 )
 PARTITION BY DATE(logged_at)
 CLUSTER BY project_id;
+
+CREATE OR REPLACE PROCEDURE unravel_share_us.migrate_tables_to_partitioned(
+  source_dataset  STRING,   -- e.g. 'unravel_share_us'
+  target_dataset  STRING,   -- e.g. 'unravel_share_us_partitioned'
+  region          STRING    -- e.g. 'US'
+)
+BEGIN
+
+  DECLARE exec_sql        STRING;
+  DECLARE col_list        STRING;
+  DECLARE current_run_ts  TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
+
+  -- ── Create target dataset if it doesn't exist ─────────────────────────
+  SET exec_sql = FORMAT("""
+    CREATE SCHEMA IF NOT EXISTS `%s`
+    OPTIONS (location = 'US')
+  """, target_dataset);
+
+  BEGIN
+    EXECUTE IMMEDIATE exec_sql;
+  EXCEPTION WHEN ERROR THEN
+    RAISE USING MESSAGE = 'Failed to create target dataset: ' || @@error.message;
+  END;
+
+  -- ── Table-level config: partition col, cluster cols, expiry days ───────
+  FOR tbl IN (
+    SELECT
+      table_id,
+      partition_col,
+      cluster_cols,
+      expiry_days
+    FROM UNNEST([
+  STRUCT('ASSIGNMENTS_US'         AS table_id, CAST(NULL AS STRING)        AS partition_col, 'project_id'             AS cluster_cols, CAST(180 AS INT64) AS expiry_days),
+  STRUCT('ASSIGNMENT_CHANGES_US',              'DATE(change_timestamp)',                      'project_id',                             CAST(180 AS INT64)               ),
+  STRUCT('BILLING_TABLE',                      'DATE(export_time)',                           NULL,                             CAST(365 AS INT64)               ),
+  STRUCT('COLUMNS_US',                         CAST(NULL AS STRING),                          'table_catalog',                          CAST(NULL AS INT64)              ),
+  STRUCT('JOBS_TIMELINE_US',                   'DATE(job_creation_time)',                     'project_id, user_email',                 CAST(180 AS INT64)               ),
+  STRUCT('JOBS_US',                            'DATE(creation_time)',                         'project_id, user_email',                 CAST(180 AS INT64)               ),
+  STRUCT('RESERVATIONS_TIMELINE_US',           'DATE(period_start)',                          'project_id',                             CAST(180 AS INT64)               ),
+  STRUCT('RESERVATIONS_US',                    CAST(NULL AS STRING),                          'project_id',                             CAST(NULL AS INT64)              ),
+  STRUCT('RESERVATION_CHANGES_US',             'DATE(change_timestamp)',                      'project_id',                             CAST(180 AS INT64)               ),
+  STRUCT('SCHEMATA_OPTIONS_US',                CAST(NULL AS STRING),                          'catalog_name',                           CAST(NULL AS INT64)              ),
+  STRUCT('TABLES_US',                          CAST(NULL AS STRING),                          'table_catalog',                          CAST(NULL AS INT64)              ),
+  STRUCT('TABLE_OPTIONS_US',                   CAST(NULL AS STRING),                          'table_catalog',                          CAST(NULL AS INT64)              ),
+  STRUCT('TABLE_STORAGE_US',                   CAST(NULL AS STRING),                          'table_catalog',                          CAST(NULL AS INT64)              ),
+  STRUCT('error_log',                          'DATE(logged_at)',                             'project_id',                             CAST(365 AS INT64)               )
+])
+  ) DO
+
+    -- ── Build col_list from source table ──────────────────────────────────
+    SET exec_sql = FORMAT("""
+      SELECT STRING_AGG(column_name, ', ' ORDER BY ordinal_position)
+      FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
+      WHERE table_catalog = '%s'
+        AND table_schema  = '%s'
+        AND table_name    = '%s'
+    """, region, @@project_id, source_dataset, tbl.table_id);
+
+    BEGIN
+      EXECUTE IMMEDIATE exec_sql INTO col_list;
+    EXCEPTION WHEN ERROR THEN
+      INSERT INTO `unravel_share_us.error_log`
+        (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+      VALUES
+        (current_run_ts, tbl.table_id, @@project_id,
+         'col_list resolution failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+      CONTINUE;
+    END;
+
+    IF col_list IS NULL THEN
+      INSERT INTO `unravel_share_us.error_log`
+        (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+      VALUES
+        (current_run_ts, tbl.table_id, @@project_id,
+         'col_list is NULL – source table missing or empty schema', NULL, CURRENT_TIMESTAMP());
+      CONTINUE;
+    END IF;
+
+    -- ── DDL: CREATE TABLE in target dataset ───────────────────────────────
+    SET exec_sql = FORMAT("""
+      CREATE TABLE IF NOT EXISTS `%s.%s`
+      %s
+      %s
+      %s
+      AS
+      SELECT %s FROM `%s.%s`
+      WHERE FALSE
+    """,
+    target_dataset, tbl.table_id,
+    -- PARTITION BY clause
+    IF(tbl.partition_col IS NOT NULL,
+       FORMAT('PARTITION BY %s', tbl.partition_col), ''),
+    -- CLUSTER BY clause
+    IF(tbl.cluster_cols IS NOT NULL,
+       FORMAT('CLUSTER BY %s', tbl.cluster_cols), ''),
+    -- OPTIONS clause (only if partitioned + expiry set)
+    IF(tbl.partition_col IS NOT NULL AND tbl.expiry_days IS NOT NULL,
+       FORMAT('OPTIONS (partition_expiration_days = %d)', tbl.expiry_days), ''),
+    col_list,
+    source_dataset, tbl.table_id);
+
+    BEGIN
+      EXECUTE IMMEDIATE exec_sql;
+    EXCEPTION WHEN ERROR THEN
+      INSERT INTO `unravel_share_us.error_log`
+        (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+      VALUES
+        (current_run_ts, tbl.table_id, @@project_id,
+         'DDL failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+      CONTINUE;
+    END;
+
+    -- ── DML: Copy data from source → target ───────────────────────────────
+    SET exec_sql = FORMAT("""
+      INSERT INTO `%s.%s` (%s)
+      SELECT %s FROM `%s.%s`
+    """,
+    target_dataset, tbl.table_id, col_list,
+    col_list,
+    source_dataset, tbl.table_id);
+
+    BEGIN
+      EXECUTE IMMEDIATE exec_sql;
+    EXCEPTION WHEN ERROR THEN
+      INSERT INTO `unravel_share_us.error_log`
+        (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+      VALUES
+        (current_run_ts, tbl.table_id, @@project_id,
+         'Data copy failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+    END;
+
+  END FOR;
+
+END;
+
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Procedure to create projects_table
@@ -65,7 +200,7 @@ BEGIN
 
 END;
 
-CREATE OR REPLACE PROCEDURE unravel_share_US.export_billing_data_incremental(
+CREATE OR REPLACE PROCEDURE unravel_share_us_partitioned.export_billing_data_incremental(
   dataset_name           STRING,
   look_back_days         INT64,
   billing_export_project STRING,
@@ -106,7 +241,7 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql;
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_US.error_log`
+    INSERT INTO `unravel_share_us_partitioned.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -133,7 +268,7 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql INTO billing_col_list;
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_US.error_log`
+    INSERT INTO `unravel_share_us_partitioned.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -143,7 +278,7 @@ BEGIN
   END;
 
   IF billing_col_list IS NULL THEN
-    INSERT INTO `unravel_share_US.error_log`
+    INSERT INTO `unravel_share_us_partitioned.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -185,7 +320,7 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql;
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_US.error_log`
+    INSERT INTO `unravel_share_us_partitioned.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -196,7 +331,7 @@ BEGIN
 END;
 
 
-CREATE OR REPLACE PROCEDURE unravel_share_US.export_metadata_incremental_US(
+CREATE OR REPLACE PROCEDURE unravel_share_us_partitioned.export_metadata_incremental_US(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -287,7 +422,7 @@ BEGIN
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
-      INSERT INTO `unravel_share_US.error_log`
+      INSERT INTO `unravel_share_us_partitioned.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -306,7 +441,7 @@ BEGIN
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
-      INSERT INTO `unravel_share_US.error_log`
+      INSERT INTO `unravel_share_us_partitioned.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -335,7 +470,7 @@ BEGIN
       EXECUTE IMMEDIATE exec_sql INTO col_list;
     EXCEPTION WHEN ERROR THEN
       EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, temp_table_name);
-      INSERT INTO `unravel_share_US.error_log`
+      INSERT INTO `unravel_share_us_partitioned.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -346,7 +481,7 @@ BEGIN
     EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, temp_table_name);
 
     IF col_list IS NULL THEN
-      INSERT INTO `unravel_share_US.error_log`
+      INSERT INTO `unravel_share_us_partitioned.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -366,7 +501,7 @@ BEGIN
       SET project_id = project_row.f0_;
 
       IF project_id IS NULL OR project_id = '' THEN
-        INSERT INTO `unravel_share_US.error_log`
+        INSERT INTO `unravel_share_us_partitioned.error_log`
           (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
         VALUES
           (current_run_ts, dest_table_name, project_id,
@@ -429,7 +564,7 @@ BEGIN
           BEGIN
             EXECUTE IMMEDIATE exec_sql;
           EXCEPTION WHEN ERROR THEN
-            INSERT INTO `unravel_share_US.error_log`
+            INSERT INTO `unravel_share_us_partitioned.error_log`
               (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
             VALUES
               (current_run_ts, dest_table_name, 'BATCH',
@@ -451,7 +586,7 @@ BEGIN
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
         EXCEPTION WHEN ERROR THEN
-          INSERT INTO `unravel_share_US.error_log`
+          INSERT INTO `unravel_share_us_partitioned.error_log`
             (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
           VALUES
             (current_run_ts, dest_table_name, 'BATCH',
@@ -481,7 +616,7 @@ BEGIN
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
         EXCEPTION WHEN ERROR THEN
-          INSERT INTO `unravel_share_US.error_log`
+          INSERT INTO `unravel_share_us_partitioned.error_log`
             (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
           VALUES
             (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
@@ -499,7 +634,7 @@ BEGIN
       BEGIN
         EXECUTE IMMEDIATE exec_sql;
       EXCEPTION WHEN ERROR THEN
-        INSERT INTO `unravel_share_US.error_log`
+        INSERT INTO `unravel_share_us_partitioned.error_log`
           (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
         VALUES
           (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
@@ -515,7 +650,7 @@ END;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Wrapper: resolves project_ids from projects_table then calls main procedure
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_US.export_metadata_incremental_US_all_projects(
+CREATE OR REPLACE PROCEDURE unravel_share_us_partitioned.export_metadata_incremental_US_all_projects(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -538,7 +673,7 @@ BEGIN
     RAISE USING MESSAGE = "ERROR: No rows present in: " || projects_table;
   END IF;
 
-  CALL unravel_share_US.export_metadata_incremental_US(
+  CALL unravel_share_us_partitioned.export_metadata_incremental_US(
     dataset_name,
     lookback_days,
     tables,
