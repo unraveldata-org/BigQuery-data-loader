@@ -3,7 +3,7 @@ SET @@location = 'EU';
 CREATE SCHEMA IF NOT EXISTS unravel_share_EU
   OPTIONS (location = 'EU');
 
-CREATE TABLE IF NOT EXISTS `unravel_share_EU.error_log`
+CREATE TABLE IF NOT EXISTS `unravel_share_eu_new.error_log`
 (
   run_ts        TIMESTAMP,
   dest_table    STRING,
@@ -15,10 +15,7 @@ CREATE TABLE IF NOT EXISTS `unravel_share_EU.error_log`
 PARTITION BY DATE(logged_at)
 CLUSTER BY project_id;
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Procedure to incrementally sync metadata tables
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_EU.export_metadata_incremental_EU(
+CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -42,6 +39,7 @@ BEGIN
   DECLARE time_col         STRING;
   DECLARE time_filter      STRING;
   DECLARE project_id       STRING;
+  DECLARE is_by_org        BOOL;
 
   -- Batching variables
   DECLARE batch_count      INT64;
@@ -73,6 +71,10 @@ BEGIN
   FOR table_row IN (SELECT * FROM UNNEST(tables)) DO
 
     SET table_name      = table_row.f0_;
+
+    -- ─── Detect BY_ORGANIZATION views ────────────────────────────────────
+    SET is_by_org = ENDS_WITH(table_name, 'BY_ORGANIZATION');
+
     SET dest_table_name = CONCAT(table_name, '_', region);
 
     SET partition_clause = CASE table_name
@@ -86,30 +88,47 @@ BEGIN
       WHEN 'JOBS_TIMELINE' THEN 'CLUSTER BY project_id, user_email'
       ELSE ''
     END;
-
-    -- ─── DDL: create destination if not exists ───────────────────────────
-    SET exec_sql = FORMAT("""
-      CREATE TABLE IF NOT EXISTS `%s.%s`
-      %s
-      %s
-      %s
-      AS
-      SELECT *, CAST(NULL AS STRING) AS region,
-             CAST(NULL AS STRING) AS project,
-             CURRENT_TIMESTAMP() AS ingestion_ts
-      FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
-      LIMIT 0
-    """,
-    dataset_name, dest_table_name,
-    partition_clause, cluster_clause,
-    IF(partition_clause != '',
-       FORMAT('OPTIONS (partition_expiration_days = %d)', retention_days), ''),
-    baseline_project, region, table_name);
+    IF is_by_org THEN
+      SET exec_sql = FORMAT("""
+        CREATE TABLE IF NOT EXISTS `%s.%s`
+        %s
+        %s
+        %s
+        AS
+        SELECT *, CAST(NULL AS STRING) AS region,
+               CURRENT_TIMESTAMP() AS ingestion_ts
+        FROM `region-%s`.INFORMATION_SCHEMA.%s
+        LIMIT 0
+      """,
+      dataset_name, dest_table_name,
+      partition_clause, cluster_clause,
+      IF(partition_clause != '',
+         FORMAT('OPTIONS (partition_expiration_days = %d)', retention_days), ''),
+      region, table_name);
+    ELSE
+      SET exec_sql = FORMAT("""
+        CREATE TABLE IF NOT EXISTS `%s.%s`
+        %s
+        %s
+        %s
+        AS
+        SELECT *, CAST(NULL AS STRING) AS region,
+               CAST(NULL AS STRING) AS project,
+               CURRENT_TIMESTAMP() AS ingestion_ts
+        FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
+        LIMIT 0
+      """,
+      dataset_name, dest_table_name,
+      partition_clause, cluster_clause,
+      IF(partition_clause != '',
+         FORMAT('OPTIONS (partition_expiration_days = %d)', retention_days), ''),
+      baseline_project, region, table_name);
+    END IF;
 
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
-      INSERT INTO `unravel_share_EU.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -120,15 +139,22 @@ BEGIN
     -- ─── Resolve col_list using baseline project ──────────────────────────
     SET temp_table_name = CONCAT('src_cols_temp_', run_uuid);
 
-    SET exec_sql = FORMAT("""
-      CREATE OR REPLACE TABLE `%s.%s` AS
-      SELECT * FROM `%s.region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
-    """, dataset_name, temp_table_name, baseline_project, region, table_name);
+    IF is_by_org THEN
+      SET exec_sql = FORMAT("""
+        CREATE OR REPLACE TABLE `%s.%s` AS
+        SELECT * FROM `region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+      """, dataset_name, temp_table_name, region, table_name);
+    ELSE
+      SET exec_sql = FORMAT("""
+        CREATE OR REPLACE TABLE `%s.%s` AS
+        SELECT * FROM `%s.region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+      """, dataset_name, temp_table_name, baseline_project, region, table_name);
+    END IF;
 
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
-      INSERT INTO `unravel_share_EU.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -157,7 +183,7 @@ BEGIN
       EXECUTE IMMEDIATE exec_sql INTO col_list;
     EXCEPTION WHEN ERROR THEN
       EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, temp_table_name);
-      INSERT INTO `unravel_share_EU.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -168,7 +194,7 @@ BEGIN
     EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, temp_table_name);
 
     IF col_list IS NULL THEN
-      INSERT INTO `unravel_share_EU.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -176,9 +202,87 @@ BEGIN
       CONTINUE;
     END IF;
 
-    -- ─────────────────────────────────────────────────────────────────────
-    -- BATCHED DIRECT INSERT  (50 projects → 1 INSERT per batch)
-    -- ─────────────────────────────────────────────────────────────────────
+    -- ═════════════════════════════════════════════════════════════════════
+    -- BY_ORGANIZATION path: single org-level query, no per-project looping
+    -- ═════════════════════════════════════════════════════════════════════
+    IF is_by_org THEN
+
+      SET time_col    = NULL;
+      SET time_filter = 'WHERE TRUE';
+
+      -- Incremental time filter for JOBS_BY_ORGANIZATION / JOBS_TIMELINE_BY_ORGANIZATION
+      -- (same time columns as their per-project counterparts)
+      IF table_name = 'STREAMING_TIMELINE_BY_ORGANIZATION' THEN
+        -- STREAMING_TIMELINE_BY_ORGANIZATION uses start_timestamp
+        SET time_col = 'start_timestamp';
+      END IF;
+      -- Extend here if other BY_ORGANIZATION views gain a reliable timestamp column
+
+      IF time_col IS NOT NULL THEN
+
+        EXECUTE IMMEDIATE FORMAT("""
+          SELECT MAX(%s) FROM `%s.%s`
+          WHERE region = '%s'
+        """, time_col, dataset_name, dest_table_name, region)
+        INTO last_sync_ts;
+
+        IF last_sync_ts IS NULL THEN
+          SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY);
+        END IF;
+
+        SET time_filter = FORMAT(
+          "WHERE %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
+          time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_sync_ts),
+          time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
+
+      ELSE
+        -- Non-incremental BY_ORGANIZATION view: full replace for this region
+        SET exec_sql = FORMAT("""
+          DELETE FROM `%s.%s`
+          WHERE region = '%s'
+        """, dataset_name, dest_table_name, region);
+
+        BEGIN
+          EXECUTE IMMEDIATE exec_sql;
+        EXCEPTION WHEN ERROR THEN
+          INSERT INTO `unravel_share_us_new.error_log`
+            (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+          VALUES
+            (current_run_ts, dest_table_name, 'BY_ORG',
+             'BY_ORG delete failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+          CONTINUE;
+        END;
+
+      END IF;
+
+      -- Single INSERT from org-level view
+      SET exec_sql = FORMAT("""
+        INSERT INTO `%s.%s` (%s, region, ingestion_ts)
+        SELECT %s, '%s', CURRENT_TIMESTAMP()
+        FROM `region-%s`.INFORMATION_SCHEMA.%s
+        %s
+      """, dataset_name, dest_table_name, col_list,
+           col_list, region,
+           region, table_name,
+           time_filter);
+
+      BEGIN
+        EXECUTE IMMEDIATE exec_sql;
+      EXCEPTION WHEN ERROR THEN
+        INSERT INTO `unravel_share_us_new.error_log`
+          (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+        VALUES
+          (current_run_ts, dest_table_name, 'BY_ORG',
+           'BY_ORG insert failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+      END;
+
+      CONTINUE;  -- skip the per-project batching block below
+
+    END IF;
+
+    -- ═════════════════════════════════════════════════════════════════════
+    -- Per-project path: batched UNION ALL inserts
+    -- ═════════════════════════════════════════════════════════════════════
 
     SET batch_count     = 0;
     SET batch_union_sql = '';
@@ -188,7 +292,7 @@ BEGIN
       SET project_id = project_row.f0_;
 
       IF project_id IS NULL OR project_id = '' THEN
-        INSERT INTO `unravel_share_EU.error_log`
+        INSERT INTO `unravel_share_us_new.error_log`
           (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
         VALUES
           (current_run_ts, dest_table_name, project_id,
@@ -251,7 +355,7 @@ BEGIN
           BEGIN
             EXECUTE IMMEDIATE exec_sql;
           EXCEPTION WHEN ERROR THEN
-            INSERT INTO `unravel_share_EU.error_log`
+            INSERT INTO `unravel_share_us_new.error_log`
               (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
             VALUES
               (current_run_ts, dest_table_name, 'BATCH',
@@ -273,7 +377,7 @@ BEGIN
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
         EXCEPTION WHEN ERROR THEN
-          INSERT INTO `unravel_share_EU.error_log`
+          INSERT INTO `unravel_share_us_new.error_log`
             (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
           VALUES
             (current_run_ts, dest_table_name, 'BATCH',
@@ -288,7 +392,7 @@ BEGIN
 
     END FOR;  -- projects
 
-    -- ─── Flush any remaining projects (partial last batch) ───────────────
+    -- ─── Flush remainder ─────────────────────────────────────────────────
     IF batch_count > 0 AND batch_union_sql != '' THEN
 
       IF table_name NOT IN ('JOBS', 'JOBS_TIMELINE') THEN
@@ -303,7 +407,7 @@ BEGIN
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
         EXCEPTION WHEN ERROR THEN
-          INSERT INTO `unravel_share_EU.error_log`
+          INSERT INTO `unravel_share_us_new.error_log`
             (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
           VALUES
             (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
@@ -321,7 +425,7 @@ BEGIN
       BEGIN
         EXECUTE IMMEDIATE exec_sql;
       EXCEPTION WHEN ERROR THEN
-        INSERT INTO `unravel_share_EU.error_log`
+        INSERT INTO `unravel_share_us_new.error_log`
           (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
         VALUES
           (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
@@ -337,7 +441,7 @@ END;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Wrapper: resolves project_ids from projects_table then calls main procedure
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_EU.export_metadata_incremental_EU_all_projects(
+CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US_all_projects(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -360,7 +464,7 @@ BEGIN
     RAISE USING MESSAGE = "ERROR: No rows present in: " || projects_table;
   END IF;
 
-  CALL unravel_share_EU.export_metadata_incremental_EU(
+  CALL unravel_share_us_new.export_metadata_incremental_US(
     dataset_name,
     lookback_days,
     tables,
