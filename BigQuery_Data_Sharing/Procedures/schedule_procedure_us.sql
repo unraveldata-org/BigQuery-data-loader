@@ -1,6 +1,6 @@
 SET @@location = 'US';
 
-CREATE SCHEMA IF NOT EXISTS unravel_share_us_partitioned
+CREATE SCHEMA IF NOT EXISTS unravel_share_us_new
   OPTIONS (
       location = 'US'
   );
@@ -11,7 +11,7 @@ CREATE SCHEMA IF NOT EXISTS unravel_share_us_projects_list
   );
 
 
-CREATE TABLE IF NOT EXISTS `unravel_share_us_partitioned.error_log`
+CREATE TABLE IF NOT EXISTS `unravel_share_us_new.error_log`
 (
   run_ts        TIMESTAMP,
   dest_table    STRING,
@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS `unravel_share_us_partitioned.error_log`
 PARTITION BY DATE(logged_at)
 CLUSTER BY project_id;
 
-CREATE OR REPLACE PROCEDURE unravel_share_us.migrate_tables_to_partitioned(
+CREATE OR REPLACE PROCEDURE unravel_share_us.migrate_tables_to_new(
   source_dataset  STRING,   -- e.g. 'unravel_share_us'
-  target_dataset  STRING,   -- e.g. 'unravel_share_us_partitioned'
+  target_dataset  STRING,   -- e.g. 'unravel_share_us_new'
   region          STRING    -- e.g. 'US'
 )
 BEGIN
@@ -117,7 +117,7 @@ BEGIN
     -- CLUSTER BY clause
     IF(tbl.cluster_cols IS NOT NULL,
        FORMAT('CLUSTER BY %s', tbl.cluster_cols), ''),
-    -- OPTIONS clause (only if partitioned + expiry set)
+    -- OPTIONS clause (only if new + expiry set)
     IF(tbl.partition_col IS NOT NULL AND tbl.expiry_days IS NOT NULL,
        FORMAT('OPTIONS (partition_expiration_days = %d)', tbl.expiry_days), ''),
     col_list,
@@ -200,7 +200,7 @@ BEGIN
 
 END;
 
-CREATE OR REPLACE PROCEDURE unravel_share_us_partitioned.export_billing_data_incremental(
+CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_billing_data_incremental(
   dataset_name           STRING,
   look_back_days         INT64,
   billing_export_project STRING,
@@ -241,7 +241,7 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql;
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_us_partitioned.error_log`
+    INSERT INTO `unravel_share_us_new.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -268,7 +268,7 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql INTO billing_col_list;
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_us_partitioned.error_log`
+    INSERT INTO `unravel_share_us_new.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -278,7 +278,7 @@ BEGIN
   END;
 
   IF billing_col_list IS NULL THEN
-    INSERT INTO `unravel_share_us_partitioned.error_log`
+    INSERT INTO `unravel_share_us_new.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -320,7 +320,7 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql;
   EXCEPTION WHEN ERROR THEN
-    INSERT INTO `unravel_share_us_partitioned.error_log`
+    INSERT INTO `unravel_share_us_new.error_log`
       (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
     VALUES
       (current_run_ts, dest_table, billing_export_project,
@@ -331,7 +331,7 @@ BEGIN
 END;
 
 
-CREATE OR REPLACE PROCEDURE unravel_share_us_partitioned.export_metadata_incremental_US(
+CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -422,7 +422,7 @@ BEGIN
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
-      INSERT INTO `unravel_share_us_partitioned.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -441,7 +441,7 @@ BEGIN
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
-      INSERT INTO `unravel_share_us_partitioned.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -470,7 +470,7 @@ BEGIN
       EXECUTE IMMEDIATE exec_sql INTO col_list;
     EXCEPTION WHEN ERROR THEN
       EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, temp_table_name);
-      INSERT INTO `unravel_share_us_partitioned.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -481,7 +481,7 @@ BEGIN
     EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, temp_table_name);
 
     IF col_list IS NULL THEN
-      INSERT INTO `unravel_share_us_partitioned.error_log`
+      INSERT INTO `unravel_share_us_new.error_log`
         (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
       VALUES
         (current_run_ts, dest_table_name, baseline_project,
@@ -501,7 +501,7 @@ BEGIN
       SET project_id = project_row.f0_;
 
       IF project_id IS NULL OR project_id = '' THEN
-        INSERT INTO `unravel_share_us_partitioned.error_log`
+        INSERT INTO `unravel_share_us_new.error_log`
           (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
         VALUES
           (current_run_ts, dest_table_name, project_id,
@@ -564,7 +564,7 @@ BEGIN
           BEGIN
             EXECUTE IMMEDIATE exec_sql;
           EXCEPTION WHEN ERROR THEN
-            INSERT INTO `unravel_share_us_partitioned.error_log`
+            INSERT INTO `unravel_share_us_new.error_log`
               (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
             VALUES
               (current_run_ts, dest_table_name, 'BATCH',
@@ -586,7 +586,7 @@ BEGIN
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
         EXCEPTION WHEN ERROR THEN
-          INSERT INTO `unravel_share_us_partitioned.error_log`
+          INSERT INTO `unravel_share_us_new.error_log`
             (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
           VALUES
             (current_run_ts, dest_table_name, 'BATCH',
@@ -616,7 +616,7 @@ BEGIN
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
         EXCEPTION WHEN ERROR THEN
-          INSERT INTO `unravel_share_us_partitioned.error_log`
+          INSERT INTO `unravel_share_us_new.error_log`
             (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
           VALUES
             (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
@@ -634,7 +634,7 @@ BEGIN
       BEGIN
         EXECUTE IMMEDIATE exec_sql;
       EXCEPTION WHEN ERROR THEN
-        INSERT INTO `unravel_share_us_partitioned.error_log`
+        INSERT INTO `unravel_share_us_new.error_log`
           (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
         VALUES
           (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
@@ -650,7 +650,7 @@ END;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Wrapper: resolves project_ids from projects_table then calls main procedure
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_us_partitioned.export_metadata_incremental_US_all_projects(
+CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US_all_projects(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -673,7 +673,7 @@ BEGIN
     RAISE USING MESSAGE = "ERROR: No rows present in: " || projects_table;
   END IF;
 
-  CALL unravel_share_us_partitioned.export_metadata_incremental_US(
+  CALL unravel_share_us_new.export_metadata_incremental_US(
     dataset_name,
     lookback_days,
     tables,
