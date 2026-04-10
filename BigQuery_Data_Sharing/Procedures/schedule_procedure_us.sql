@@ -202,7 +202,8 @@ CREATE OR REPLACE PROCEDURE unravel_share_US.export_metadata_incremental_US(
   tables         ARRAY<STRING>,
   region         STRING,
   project_ids    ARRAY<STRING>,
-  retention_days INT64
+  retention_days INT64,
+  batch_size     INT64
 )
 BEGIN
 
@@ -219,18 +220,10 @@ BEGIN
   DECLARE time_col         STRING;
   DECLARE time_filter      STRING;
   DECLARE project_id       STRING;
-  DECLARE staging_has_rows INT64;
 
   -- Batching variables
-  DECLARE batch_size       INT64 DEFAULT 1000;
   DECLARE batch_count      INT64;
-  DECLARE batch_number     INT64;
-  DECLARE staging_table    STRING;
-  DECLARE staging_tables   ARRAY<STRING>;
-  DECLARE flush_sql        STRING;
-  DECLARE st               STRING;
-
-  -- SQL capture variable for error logging
+  DECLARE batch_union_sql  STRING;   -- accumulates SELECT fragments for current batch
   DECLARE exec_sql         STRING;
 
   IF region IS NULL THEN
@@ -272,7 +265,7 @@ BEGIN
       ELSE ''
     END;
 
-    -- ─── DDL: create destination if not exists ───
+    -- ─── DDL: create destination if not exists ───────────────────────────
     SET exec_sql = FORMAT("""
       CREATE TABLE IF NOT EXISTS `%s.%s`
       %s
@@ -302,7 +295,7 @@ BEGIN
       CONTINUE;
     END;
 
-    -- ─── Resolve col_list using baseline project ───
+    -- ─── Resolve col_list using baseline project ──────────────────────────
     SET temp_table_name = CONCAT('src_cols_temp_', run_uuid);
 
     SET exec_sql = FORMAT("""
@@ -362,13 +355,11 @@ BEGIN
     END IF;
 
     -- ─────────────────────────────────────────────────────────────────────
-    -- ROTATING STAGING TABLES
+    -- BATCHED DIRECT INSERT  (50 projects → 1 INSERT per batch)
     -- ─────────────────────────────────────────────────────────────────────
 
-    SET staging_tables = [];
-    SET batch_count    = 0;
-    SET batch_number   = 0;
-    SET staging_table  = '';
+    SET batch_count     = 0;
+    SET batch_union_sql = '';
 
     FOR project_row IN (SELECT * FROM UNNEST(project_ids)) DO
 
@@ -383,37 +374,7 @@ BEGIN
         CONTINUE;
       END IF;
 
-      -- ─── Rotate staging table when batch is full or first iteration ───
-      IF batch_count >= batch_size OR staging_table = '' THEN
-        SET batch_number  = batch_number + 1;
-        SET staging_table = CONCAT('stg_', table_name, '_', run_uuid, '_b', batch_number);
-        SET batch_count   = 0;
-
-        SET exec_sql = FORMAT("""
-          CREATE TABLE `%s.%s` AS
-          SELECT %s, CAST(NULL AS STRING) AS region,
-                 CAST(NULL AS STRING) AS project
-          FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
-          LIMIT 0
-        """, dataset_name, staging_table,
-             col_list,
-             baseline_project, region, table_name);
-
-        BEGIN
-          EXECUTE IMMEDIATE exec_sql;
-          SET staging_tables = ARRAY_CONCAT(staging_tables, [staging_table]);
-        EXCEPTION WHEN ERROR THEN
-          INSERT INTO `unravel_share_US.error_log`
-            (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
-          VALUES
-            (current_run_ts, dest_table_name, baseline_project,
-             FORMAT('Staging table creation failed (batch %d): ', batch_number)
-               || @@error.message, exec_sql, CURRENT_TIMESTAMP());
-          CONTINUE;
-        END;
-      END IF;
-
-      -- ─── Per-project watermark for incremental tables ───
+      -- ─── Per-project watermark for incremental tables ─────────────────
       IF table_name IN ('JOBS', 'JOBS_TIMELINE') THEN
 
         SET time_col = IF(table_name = 'JOBS', 'creation_time', 'job_creation_time');
@@ -437,78 +398,33 @@ BEGIN
         SET time_filter = 'WHERE TRUE';
       END IF;
 
-      -- ─── Insert this project's data into current staging table ───
-      SET exec_sql = FORMAT("""
-        INSERT INTO `%s.%s` (%s, region, project)
+      -- ─── Append this project's SELECT fragment to the batch ──────────
+      IF batch_union_sql != '' THEN
+        SET batch_union_sql = batch_union_sql || '\nUNION ALL\n';
+      END IF;
+
+      SET batch_union_sql = batch_union_sql || FORMAT("""
         SELECT %s, '%s' AS region, '%s' AS project
         FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
         %s
-      """,
-      dataset_name, staging_table, col_list,
-      col_list, region, project_id,
-      project_id, region, table_name,
-      time_filter);
-
-      BEGIN
-        EXECUTE IMMEDIATE exec_sql;
-      EXCEPTION WHEN ERROR THEN
-        INSERT INTO `unravel_share_US.error_log`
-          (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
-        VALUES
-          (current_run_ts, dest_table_name, project_id,
-           'Staging insert failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
-        CONTINUE;
-      END;
+      """, col_list, region, project_id,
+           project_id, region, table_name,
+           time_filter);
 
       SET batch_count = batch_count + 1;
 
-    END FOR;  -- projects
+      -- ─── Flush when batch is full ─────────────────────────────────────
+      IF batch_count >= batch_size THEN
 
-    -- ─────────────────────────────────────────────────────────────────────
-    -- FLUSH: all staging tables → destination in ONE DML
-    -- ─────────────────────────────────────────────────────────────────────
-
-    IF ARRAY_LENGTH(staging_tables) > 0 THEN
-
-      -- Build UNION ALL across all staging tables
-      SET flush_sql = '';
-      FOR stg_row IN (SELECT * FROM UNNEST(staging_tables)) DO
-        SET st = stg_row.f0_;
-        IF flush_sql != '' THEN
-          SET flush_sql = flush_sql || '\nUNION ALL\n';
-        END IF;
-        SET flush_sql = flush_sql || FORMAT("""
-          SELECT %s, region, project FROM `%s.%s`
-        """, col_list, dataset_name, st);
-      END FOR;
-
-      -- Check if any staging table has rows
-      SET staging_has_rows = 0;
-      FOR stg_row IN (SELECT * FROM UNNEST(staging_tables)) DO
-        SET st = stg_row.f0_;
-        IF staging_has_rows = 0 THEN
-          EXECUTE IMMEDIATE FORMAT("""
-            SELECT COUNT(*) FROM `%s.%s` LIMIT 1
-          """, dataset_name, st)
-          INTO staging_has_rows;
-          IF staging_has_rows > 0 THEN
-            SET staging_has_rows = 1;
-          END IF;
-        END IF;
-      END FOR;
-
-      IF staging_has_rows > 0 THEN
-
-        -- For non-incremental tables, delete existing rows first
+        -- For non-incremental tables: DELETE existing rows for these projects first
         IF table_name NOT IN ('JOBS', 'JOBS_TIMELINE') THEN
-
           SET exec_sql = FORMAT("""
             DELETE FROM `%s.%s`
             WHERE region = '%s'
               AND project IN (
                 SELECT DISTINCT project FROM (%s)
               )
-          """, dataset_name, dest_table_name, region, flush_sql);
+          """, dataset_name, dest_table_name, region, batch_union_sql);
 
           BEGIN
             EXECUTE IMMEDIATE exec_sql;
@@ -516,24 +432,21 @@ BEGIN
             INSERT INTO `unravel_share_US.error_log`
               (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
             VALUES
-              (current_run_ts, dest_table_name, 'ALL_PROJECTS',
-               'Batched delete before flush failed: ' || @@error.message,
-               exec_sql, CURRENT_TIMESTAMP());
-            -- Clean up all staging tables and skip
-            FOR stg_row IN (SELECT * FROM UNNEST(staging_tables)) DO
-              EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`",
-                dataset_name, stg_row.f0_);
-            END FOR;
+              (current_run_ts, dest_table_name, 'BATCH',
+               'Batch delete failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+            -- Reset and skip this batch
+            SET batch_union_sql = '';
+            SET batch_count     = 0;
             CONTINUE;
           END;
         END IF;
 
-        -- ─── Single INSERT: all staging tables → destination ───
+        -- Single INSERT for entire batch
         SET exec_sql = FORMAT("""
           INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
-          SELECT flush_rows.*, CURRENT_TIMESTAMP()
-          FROM (%s) AS flush_rows
-        """, dataset_name, dest_table_name, col_list, flush_sql);
+          SELECT batch_rows.*, CURRENT_TIMESTAMP()
+          FROM (%s) AS batch_rows
+        """, dataset_name, dest_table_name, col_list, batch_union_sql);
 
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
@@ -541,25 +454,63 @@ BEGIN
           INSERT INTO `unravel_share_US.error_log`
             (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
           VALUES
-            (current_run_ts, dest_table_name, 'ALL_PROJECTS',
-             'Final flush to destination failed: ' || @@error.message,
-             exec_sql, CURRENT_TIMESTAMP());
+            (current_run_ts, dest_table_name, 'BATCH',
+             'Batch insert failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
         END;
+
+        -- Reset batch accumulator
+        SET batch_union_sql = '';
+        SET batch_count     = 0;
 
       END IF;
 
-      -- ─── Clean up all staging tables ───
-      FOR stg_row IN (SELECT * FROM UNNEST(staging_tables)) DO
-        EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`",
-          dataset_name, stg_row.f0_);
-      END FOR;
+    END FOR;  -- projects
+
+    -- ─── Flush any remaining projects (partial last batch) ───────────────
+    IF batch_count > 0 AND batch_union_sql != '' THEN
+
+      IF table_name NOT IN ('JOBS', 'JOBS_TIMELINE') THEN
+        SET exec_sql = FORMAT("""
+          DELETE FROM `%s.%s`
+          WHERE region = '%s'
+            AND project IN (
+              SELECT DISTINCT project FROM (%s)
+            )
+        """, dataset_name, dest_table_name, region, batch_union_sql);
+
+        BEGIN
+          EXECUTE IMMEDIATE exec_sql;
+        EXCEPTION WHEN ERROR THEN
+          INSERT INTO `unravel_share_US.error_log`
+            (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+          VALUES
+            (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
+             'Remainder batch delete failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+          CONTINUE;
+        END;
+      END IF;
+
+      SET exec_sql = FORMAT("""
+        INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
+        SELECT batch_rows.*, CURRENT_TIMESTAMP()
+        FROM (%s) AS batch_rows
+      """, dataset_name, dest_table_name, col_list, batch_union_sql);
+
+      BEGIN
+        EXECUTE IMMEDIATE exec_sql;
+      EXCEPTION WHEN ERROR THEN
+        INSERT INTO `unravel_share_US.error_log`
+          (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+        VALUES
+          (current_run_ts, dest_table_name, 'REMAINDER_BATCH',
+           'Remainder batch insert failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
+      END;
 
     END IF;
 
   END FOR;  -- tables
 
 END;
-
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Wrapper: resolves project_ids from projects_table then calls main procedure
@@ -570,7 +521,8 @@ CREATE OR REPLACE PROCEDURE unravel_share_US.export_metadata_incremental_US_all_
   tables         ARRAY<STRING>,
   region         STRING,
   projects_table STRING,
-  retention_days INT64
+  retention_days INT64,
+  batch_size     INT64
 )
 BEGIN
 
@@ -592,7 +544,8 @@ BEGIN
     tables,
     region,
     project_ids,
-    retention_days
+    retention_days,
+    batch_size
   );
 
 END;
