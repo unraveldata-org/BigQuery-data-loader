@@ -169,6 +169,12 @@ CREATE OR REPLACE PROCEDURE unravel_share_us_projects_list.create_projects_table
 )
 BEGIN
 
+  DECLARE table_exists     BOOL    DEFAULT FALSE;
+  DECLARE last_export_ts   TIMESTAMP;
+  DECLARE current_run_ts   TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
+  DECLARE exec_sql         STRING;
+
+  -- ── Validate inputs ──────────────────────────────────────────────────────
   IF billing_export_project IS NULL OR billing_export_project = '' THEN
     RAISE USING MESSAGE = "ERROR: billing_export_project is empty!";
   END IF;
@@ -179,10 +185,47 @@ BEGIN
     RAISE USING MESSAGE = "ERROR: billing_table is empty!";
   END IF;
 
-  BEGIN
-    EXECUTE IMMEDIATE FORMAT("""
-      CREATE OR REPLACE TABLE `%s.projects_table` AS
-      SELECT DISTINCT project.id AS project_id
+  -- ── Check whether projects_table already exists ──────────────────────────
+  -- INFORMATION_SCHEMA.TABLES returns a row only if the table is present;
+  -- INTO receives NULL if no row matches, so we default-to-FALSE safely.
+  EXECUTE IMMEDIATE FORMAT("""
+    SELECT COUNT(*) > 0
+    FROM `region-US`.INFORMATION_SCHEMA.TABLES
+    WHERE table_catalog = '%s'
+      AND table_schema  = '%s'
+      AND table_name    = 'projects_table'
+  """, @@project_id, dataset_name)
+  INTO table_exists;
+
+  -- ════════════════════════════════════════════════════════════════════════
+  -- FIRST RUN — table does not exist yet
+  -- Create it and load all project IDs with no time filter.
+  -- ════════════════════════════════════════════════════════════════════════
+  IF NOT table_exists THEN
+
+    SET exec_sql = FORMAT("""
+      CREATE TABLE IF NOT EXISTS `%s.projects_table`
+      (
+        project_id   STRING NOT NULL,
+        first_seen   TIMESTAMP,
+        last_seen    TIMESTAMP
+      )
+      CLUSTER BY project_id
+    """, dataset_name);
+
+    BEGIN
+      EXECUTE IMMEDIATE exec_sql;
+    EXCEPTION WHEN ERROR THEN
+      RAISE USING MESSAGE = "ERROR: Failed to create projects_table – " || @@error.message;
+    END;
+
+    -- Full initial load — no export_time filter
+    SET exec_sql = FORMAT("""
+      INSERT INTO `%s.projects_table` (project_id, first_seen, last_seen)
+      SELECT
+        project.id                AS project_id,
+        MIN(export_time)          AS first_seen,
+        MAX(export_time)          AS last_seen
       FROM `%s.%s.%s`
       WHERE service.id IN (
         '650B-3C82-34DB',
@@ -190,13 +233,76 @@ BEGIN
         'DCC9-8DB9-673F',
         '24E6-581D-38E5'
       )
+        AND project.id IS NOT NULL
+      GROUP BY project.id
     """,
     dataset_name,
     billing_export_project, billing_dataset, billing_table);
 
-  EXCEPTION WHEN ERROR THEN
-     RAISE USING MESSAGE = "ERROR: Failed to create projects_table!";
-  END;
+    BEGIN
+      EXECUTE IMMEDIATE exec_sql;
+    EXCEPTION WHEN ERROR THEN
+      RAISE USING MESSAGE = "ERROR: Failed to populate projects_table on first run – " || @@error.message;
+    END;
+
+  -- ════════════════════════════════════════════════════════════════════════
+  -- SUBSEQUENT RUNS — table already exists
+  -- Watermark = MAX(last_seen) already recorded in projects_table.
+  -- Scan only billing rows with export_time > watermark, then MERGE
+  -- so that new project IDs are inserted and existing ones get their
+  -- last_seen timestamp bumped.
+  -- ════════════════════════════════════════════════════════════════════════
+  ELSE
+
+    -- Derive watermark from the projects_table itself (last_seen column)
+    EXECUTE IMMEDIATE FORMAT("""
+      SELECT MAX(last_seen) FROM `%s.projects_table`
+    """, dataset_name)
+    INTO last_export_ts;
+
+    -- If somehow last_seen is all NULL fall back to a full re-scan
+    IF last_export_ts IS NULL THEN
+      SET last_export_ts = TIMESTAMP('1970-01-01 00:00:00 UTC');
+    END IF;
+
+    SET exec_sql = FORMAT("""
+      MERGE `%s.projects_table` AS tgt
+      USING (
+        SELECT
+          project.id       AS project_id,
+          MIN(export_time) AS first_seen,
+          MAX(export_time) AS last_seen
+        FROM `%s.%s.%s`
+        WHERE service.id IN (
+          '650B-3C82-34DB',
+          '16B8-3DDA-9F10',
+          'DCC9-8DB9-673F',
+          '24E6-581D-38E5'
+        )
+          AND export_time >  TIMESTAMP '%s'
+          AND export_time <= TIMESTAMP '%s'
+          AND project.id IS NOT NULL
+        GROUP BY project.id
+      ) AS src
+      ON tgt.project_id = src.project_id
+      WHEN MATCHED THEN
+        UPDATE SET last_seen = src.last_seen
+      WHEN NOT MATCHED THEN
+        INSERT (project_id, first_seen, last_seen)
+        VALUES (src.project_id, src.first_seen, src.last_seen)
+    """,
+    dataset_name,
+    billing_export_project, billing_dataset, billing_table,
+    FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_export_ts),
+    FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
+
+    BEGIN
+      EXECUTE IMMEDIATE exec_sql;
+    EXCEPTION WHEN ERROR THEN
+      RAISE USING MESSAGE = "ERROR: Failed to merge incremental project IDs – " || @@error.message;
+    END;
+
+  END IF;
 
 END;
 
