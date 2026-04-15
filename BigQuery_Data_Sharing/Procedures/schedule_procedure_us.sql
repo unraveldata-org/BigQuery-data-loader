@@ -188,14 +188,15 @@ BEGIN
   -- ── Check whether projects_table already exists ──────────────────────────
   -- INFORMATION_SCHEMA.TABLES returns a row only if the table is present;
   -- INTO receives NULL if no row matches, so we default-to-FALSE safely.
-  EXECUTE IMMEDIATE FORMAT("""
-    SELECT COUNT(*) > 0
-    FROM `region-US`.INFORMATION_SCHEMA.TABLES
-    WHERE table_catalog = '%s'
-      AND table_schema  = '%s'
-      AND table_name    = 'projects_table'
-  """, @@project_id, dataset_name)
-  INTO table_exists;
+  BEGIN
+  -- Try to get the watermark; if this fails, the table doesn't exist
+  EXECUTE IMMEDIATE FORMAT("SELECT MAX(last_seen) FROM `%s.projects_table`", dataset_name) 
+  INTO last_export_ts;
+  SET table_exists = TRUE;
+EXCEPTION WHEN ERROR THEN
+  -- If we land here, the table likely doesn't exist
+  SET table_exists = FALSE;
+END;
 
   -- ════════════════════════════════════════════════════════════════════════
   -- FIRST RUN — table does not exist yet
