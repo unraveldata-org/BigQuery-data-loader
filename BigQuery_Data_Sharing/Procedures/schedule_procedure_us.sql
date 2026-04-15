@@ -273,19 +273,15 @@ BEGIN
           MIN(export_time) AS first_seen,
           MAX(export_time) AS last_seen
         FROM `%s.%s.%s`
-        WHERE service.id IN (
-          '650B-3C82-34DB',
-          '16B8-3DDA-9F10',
-          'DCC9-8DB9-673F',
-          '24E6-581D-38E5'
-        )
+        WHERE _PARTITIONDATE >= DATE(TIMESTAMP '%s')
+          AND service.id IN ('650B-3C82-34DB','16B8-3DDA-9F10','DCC9-8DB9-673F','24E6-581D-38E5')
           AND export_time >  TIMESTAMP '%s'
           AND export_time <= TIMESTAMP '%s'
           AND project.id IS NOT NULL
-        GROUP BY project.id
+        GROUP BY 1
       ) AS src
       ON tgt.project_id = src.project_id
-      WHEN MATCHED THEN
+      WHEN MATCHED AND src.last_seen > tgt.last_seen THEN
         UPDATE SET last_seen = src.last_seen
       WHEN NOT MATCHED THEN
         INSERT (project_id, first_seen, last_seen)
@@ -293,6 +289,7 @@ BEGIN
     """,
     dataset_name,
     billing_export_project, billing_dataset, billing_table,
+    FORMAT_TIMESTAMP('%F', last_export_ts), -- For _PARTITIONDATE
     FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_export_ts),
     FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
 
