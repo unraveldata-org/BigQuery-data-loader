@@ -435,6 +435,9 @@ BEGIN
 END;
 
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- export_metadata_incremental_US
+-- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US(
   dataset_name   STRING,
   lookback_days  INT64,
@@ -451,6 +454,7 @@ BEGIN
   DECLARE dest_table_name  STRING;
   DECLARE baseline_project STRING;
   DECLARE last_sync_ts     TIMESTAMP;
+  DECLARE last_sync_date   DATE;
   DECLARE current_run_ts   TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
   DECLARE partition_clause STRING;
   DECLARE cluster_clause   STRING;
@@ -461,9 +465,8 @@ BEGIN
   DECLARE project_id       STRING;
   DECLARE is_by_org        BOOL;
 
-  -- Batching variables
   DECLARE batch_count      INT64;
-  DECLARE batch_union_sql  STRING;   -- accumulates SELECT fragments for current batch
+  DECLARE batch_union_sql  STRING;
   DECLARE exec_sql         STRING;
 
   IF region IS NULL THEN
@@ -491,23 +494,40 @@ BEGIN
   FOR table_row IN (SELECT * FROM UNNEST(tables)) DO
 
     SET table_name      = table_row.f0_;
-
-    -- ─── Detect BY_ORGANIZATION views ────────────────────────────────────
-    SET is_by_org = ENDS_WITH(table_name, 'BY_ORGANIZATION');
-
+    SET is_by_org       = ENDS_WITH(table_name, 'BY_ORGANIZATION');
     SET dest_table_name = CONCAT(table_name, '_', region);
 
+    -- ── Partition clause ──────────────────────────────────────────────────
     SET partition_clause = CASE table_name
-      WHEN 'JOBS'          THEN 'PARTITION BY DATE(creation_time)'
-      WHEN 'JOBS_TIMELINE' THEN 'PARTITION BY DATE(job_creation_time)'
+      WHEN 'JOBS'                               THEN 'PARTITION BY DATE(creation_time)'
+      WHEN 'JOBS_BY_ORGANIZATION'               THEN 'PARTITION BY DATE(creation_time)'
+      WHEN 'JOBS_TIMELINE'                      THEN 'PARTITION BY DATE(job_creation_time)'
+      WHEN 'RESERVATIONS_TIMELINE'              THEN 'PARTITION BY DATE(period_start)'
+      WHEN 'RESERVATION_CHANGES'                THEN 'PARTITION BY DATE(change_timestamp)'
+      WHEN 'CAPACITY_COMMITMENT_CHANGES'        THEN 'PARTITION BY DATE(change_timestamp)'
+      WHEN 'ASSIGNMENT_CHANGES'                 THEN 'PARTITION BY DATE(change_timestamp)'
+      WHEN 'SHARED_DATASET_USAGE'               THEN 'PARTITION BY DATE(job_start_time)'
+      WHEN 'TABLE_STORAGE_USAGE_TIMELINE'       THEN 'PARTITION BY usage_date'
+      WHEN 'STREAMING_TIMELINE_BY_ORGANIZATION' THEN 'PARTITION BY DATE(start_timestamp)'
       ELSE ''
     END;
 
+    -- ── Cluster clause ────────────────────────────────────────────────────
     SET cluster_clause = CASE table_name
-      WHEN 'JOBS'          THEN 'CLUSTER BY project_id, user_email'
-      WHEN 'JOBS_TIMELINE' THEN 'CLUSTER BY project_id, user_email'
+      WHEN 'JOBS'                               THEN 'CLUSTER BY project_id, user_email'
+      WHEN 'JOBS_BY_ORGANIZATION'               THEN 'CLUSTER BY project_id, user_email'
+      WHEN 'JOBS_TIMELINE'                      THEN 'CLUSTER BY project_id, user_email'
+      WHEN 'RESERVATIONS_TIMELINE'              THEN 'CLUSTER BY project_id'
+      WHEN 'RESERVATION_CHANGES'                THEN 'CLUSTER BY project_id'
+      WHEN 'CAPACITY_COMMITMENT_CHANGES'        THEN 'CLUSTER BY project_id'
+      WHEN 'ASSIGNMENT_CHANGES'                 THEN 'CLUSTER BY project_id'
+      WHEN 'SHARED_DATASET_USAGE'               THEN 'CLUSTER BY project_id, dataset_id'
+      WHEN 'TABLE_STORAGE_USAGE_TIMELINE'       THEN 'CLUSTER BY table_catalog'
+      WHEN 'STREAMING_TIMELINE_BY_ORGANIZATION' THEN 'CLUSTER BY dataset_id, table_id'
       ELSE ''
     END;
+
+    -- ── DDL: create destination table if needed ───────────────────────────
     IF is_by_org THEN
       SET exec_sql = FORMAT("""
         CREATE TABLE IF NOT EXISTS `%s.%s`
@@ -556,7 +576,7 @@ BEGIN
       CONTINUE;
     END;
 
-    -- ─── Resolve col_list using baseline project ──────────────────────────
+    -- ── Resolve col_list ──────────────────────────────────────────────────
     SET temp_table_name = CONCAT('src_cols_temp_', run_uuid);
 
     IF is_by_org THEN
@@ -623,23 +643,25 @@ BEGIN
     END IF;
 
     -- ═════════════════════════════════════════════════════════════════════
-    -- BY_ORGANIZATION path: single org-level query, no per-project looping
+    -- BY_ORGANIZATION path
     -- ═════════════════════════════════════════════════════════════════════
     IF is_by_org THEN
 
       SET time_col    = NULL;
       SET time_filter = 'WHERE TRUE';
 
-      -- Incremental time filter for JOBS_BY_ORGANIZATION / JOBS_TIMELINE_BY_ORGANIZATION
-      -- (same time columns as their per-project counterparts)
+      -- Assign time_col for each incrementally-tracked BY_ORG view
       IF table_name = 'STREAMING_TIMELINE_BY_ORGANIZATION' THEN
-        -- STREAMING_TIMELINE_BY_ORGANIZATION uses start_timestamp
         SET time_col = 'start_timestamp';
+      ELSEIF table_name = 'RECOMMENDATIONS_BY_ORGANIZATION' THEN
+        SET time_col = 'last_updated_time';
+      ELSEIF table_name = 'JOBS_BY_ORGANIZATION' THEN
+        SET time_col = 'creation_time';
       END IF;
-      -- Extend here if other BY_ORGANIZATION views gain a reliable timestamp column
 
       IF time_col IS NOT NULL THEN
 
+        -- Incremental: watermark from last loaded row for this region
         EXECUTE IMMEDIATE FORMAT("""
           SELECT MAX(%s) FROM `%s.%s`
           WHERE region = '%s'
@@ -656,10 +678,10 @@ BEGIN
           time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
 
       ELSE
-        -- Non-incremental BY_ORGANIZATION view: full replace for this region
+
+        -- Non-incremental BY_ORG view: full replace for this region
         SET exec_sql = FORMAT("""
-          DELETE FROM `%s.%s`
-          WHERE region = '%s'
+          DELETE FROM `%s.%s` WHERE region = '%s'
         """, dataset_name, dest_table_name, region);
 
         BEGIN
@@ -675,7 +697,6 @@ BEGIN
 
       END IF;
 
-      -- Single INSERT from org-level view
       SET exec_sql = FORMAT("""
         INSERT INTO `%s.%s` (%s, region, ingestion_ts)
         SELECT %s, '%s', CURRENT_TIMESTAMP()
@@ -696,12 +717,12 @@ BEGIN
            'BY_ORG insert failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
       END;
 
-      CONTINUE;  -- skip the per-project batching block below
+      CONTINUE;  -- skip per-project batching below
 
     END IF;
 
     -- ═════════════════════════════════════════════════════════════════════
-    -- Per-project path: batched UNION ALL inserts
+    -- Per-project batched path
     -- ═════════════════════════════════════════════════════════════════════
 
     SET batch_count     = 0;
@@ -720,10 +741,40 @@ BEGIN
         CONTINUE;
       END IF;
 
-      -- ─── Per-project watermark for incremental tables ─────────────────
-      IF table_name IN ('JOBS', 'JOBS_TIMELINE') THEN
+      -- ── Per-project watermark / time-filter ──────────────────────────
+      --
+      --  Group A  TIMESTAMP cols — pure append, watermark per project:
+      --           JOBS, JOBS_TIMELINE,
+      --           RESERVATIONS_TIMELINE, RESERVATION_CHANGES,
+      --           CAPACITY_COMMITMENT_CHANGES, ASSIGNMENT_CHANGES,
+      --           SHARED_DATASET_USAGE, INSIGHTS
+      --
+      --  Group B  DATE col — pure append, watermark per project:
+      --           TABLE_STORAGE_USAGE_TIMELINE (usage_date)
+      --
+      --  Everything else — full replace (DELETE + INSERT)
+      --
+      IF table_name IN (
+            'JOBS',
+            'JOBS_TIMELINE',
+            'RESERVATIONS_TIMELINE',
+            'RESERVATION_CHANGES',
+            'CAPACITY_COMMITMENT_CHANGES',
+            'ASSIGNMENT_CHANGES',
+            'SHARED_DATASET_USAGE',
+            'INSIGHTS'
+          ) THEN
 
-        SET time_col = IF(table_name = 'JOBS', 'creation_time', 'job_creation_time');
+        SET time_col = CASE table_name
+          WHEN 'JOBS'                        THEN 'creation_time'
+          WHEN 'JOBS_TIMELINE'               THEN 'job_creation_time'
+          WHEN 'RESERVATIONS_TIMELINE'       THEN 'period_start'
+          WHEN 'RESERVATION_CHANGES'         THEN 'change_timestamp'
+          WHEN 'CAPACITY_COMMITMENT_CHANGES' THEN 'change_timestamp'
+          WHEN 'ASSIGNMENT_CHANGES'          THEN 'change_timestamp'
+          WHEN 'SHARED_DATASET_USAGE'        THEN 'job_start_time'
+          WHEN 'INSIGHTS'                    THEN 'last_updated_time'
+        END;
 
         EXECUTE IMMEDIATE FORMAT("""
           SELECT MAX(%s) FROM `%s.%s`
@@ -740,11 +791,28 @@ BEGIN
           time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_sync_ts),
           time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
 
+      ELSEIF table_name = 'TABLE_STORAGE_USAGE_TIMELINE' THEN
+
+        EXECUTE IMMEDIATE FORMAT("""
+          SELECT MAX(usage_date) FROM `%s.%s`
+          WHERE project = '%s' AND region = '%s'
+        """, dataset_name, dest_table_name, project_id, region)
+        INTO last_sync_date;
+
+        IF last_sync_date IS NULL THEN
+          SET last_sync_date = DATE_SUB(CURRENT_DATE(), INTERVAL lookback_days DAY);
+        END IF;
+
+        SET time_filter = FORMAT(
+          "WHERE usage_date > DATE '%s' AND usage_date <= DATE '%s'",
+          FORMAT_DATE('%F', last_sync_date),
+          FORMAT_DATE('%F', CURRENT_DATE()));
+
       ELSE
         SET time_filter = 'WHERE TRUE';
       END IF;
 
-      -- ─── Append this project's SELECT fragment to the batch ──────────
+      -- ── Append this project's SELECT to the batch ─────────────────────
       IF batch_union_sql != '' THEN
         SET batch_union_sql = batch_union_sql || '\nUNION ALL\n';
       END IF;
@@ -759,11 +827,22 @@ BEGIN
 
       SET batch_count = batch_count + 1;
 
-      -- ─── Flush when batch is full ─────────────────────────────────────
+      -- ── Flush when batch is full ──────────────────────────────────────
       IF batch_count >= batch_size THEN
 
-        -- For non-incremental tables: DELETE existing rows for these projects first
-        IF table_name NOT IN ('JOBS', 'JOBS_TIMELINE') THEN
+        -- Timeseries tables are append-only — skip the DELETE
+        IF table_name NOT IN (
+              'JOBS',
+              'JOBS_TIMELINE',
+              'RESERVATIONS_TIMELINE',
+              'RESERVATION_CHANGES',
+              'CAPACITY_COMMITMENT_CHANGES',
+              'ASSIGNMENT_CHANGES',
+              'SHARED_DATASET_USAGE',
+              'INSIGHTS',
+              'TABLE_STORAGE_USAGE_TIMELINE'
+            ) THEN
+
           SET exec_sql = FORMAT("""
             DELETE FROM `%s.%s`
             WHERE region = '%s'
@@ -780,14 +859,13 @@ BEGIN
             VALUES
               (current_run_ts, dest_table_name, 'BATCH',
                'Batch delete failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
-            -- Reset and skip this batch
             SET batch_union_sql = '';
             SET batch_count     = 0;
             CONTINUE;
           END;
+
         END IF;
 
-        -- Single INSERT for entire batch
         SET exec_sql = FORMAT("""
           INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
           SELECT batch_rows.*, CURRENT_TIMESTAMP()
@@ -804,7 +882,6 @@ BEGIN
              'Batch insert failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
         END;
 
-        -- Reset batch accumulator
         SET batch_union_sql = '';
         SET batch_count     = 0;
 
@@ -812,10 +889,21 @@ BEGIN
 
     END FOR;  -- projects
 
-    -- ─── Flush remainder ─────────────────────────────────────────────────
+    -- ── Flush remainder ───────────────────────────────────────────────────
     IF batch_count > 0 AND batch_union_sql != '' THEN
 
-      IF table_name NOT IN ('JOBS', 'JOBS_TIMELINE') THEN
+      IF table_name NOT IN (
+            'JOBS',
+            'JOBS_TIMELINE',
+            'RESERVATIONS_TIMELINE',
+            'RESERVATION_CHANGES',
+            'CAPACITY_COMMITMENT_CHANGES',
+            'ASSIGNMENT_CHANGES',
+            'SHARED_DATASET_USAGE',
+            'INSIGHTS',
+            'TABLE_STORAGE_USAGE_TIMELINE'
+          ) THEN
+
         SET exec_sql = FORMAT("""
           DELETE FROM `%s.%s`
           WHERE region = '%s'
@@ -834,6 +922,7 @@ BEGIN
              'Remainder batch delete failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
           CONTINUE;
         END;
+
       END IF;
 
       SET exec_sql = FORMAT("""
