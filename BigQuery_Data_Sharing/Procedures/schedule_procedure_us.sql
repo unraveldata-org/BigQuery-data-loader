@@ -502,6 +502,7 @@ BEGIN
       WHEN 'JOBS'                               THEN 'PARTITION BY DATE(creation_time)'
       WHEN 'JOBS_BY_ORGANIZATION'               THEN 'PARTITION BY DATE(creation_time)'
       WHEN 'JOBS_TIMELINE'                      THEN 'PARTITION BY DATE(job_creation_time)'
+      WHEN 'JOBS_TIMELINE_BY_ORGANIZATION'      THEN 'PARTITION BY DATE(job_creation_time)'  -- ← NEW
       WHEN 'RESERVATIONS_TIMELINE'              THEN 'PARTITION BY DATE(period_start)'
       WHEN 'RESERVATION_CHANGES'                THEN 'PARTITION BY DATE(change_timestamp)'
       WHEN 'CAPACITY_COMMITMENT_CHANGES'        THEN 'PARTITION BY DATE(change_timestamp)'
@@ -517,6 +518,7 @@ BEGIN
       WHEN 'JOBS'                               THEN 'CLUSTER BY project_id, user_email'
       WHEN 'JOBS_BY_ORGANIZATION'               THEN 'CLUSTER BY project_id, user_email'
       WHEN 'JOBS_TIMELINE'                      THEN 'CLUSTER BY project_id, user_email'
+      WHEN 'JOBS_TIMELINE_BY_ORGANIZATION'      THEN 'CLUSTER BY project_id, user_email'     -- ← NEW
       WHEN 'RESERVATIONS_TIMELINE'              THEN 'CLUSTER BY project_id'
       WHEN 'RESERVATION_CHANGES'                THEN 'CLUSTER BY project_id'
       WHEN 'CAPACITY_COMMITMENT_CHANGES'        THEN 'CLUSTER BY project_id'
@@ -657,6 +659,8 @@ BEGIN
         SET time_col = 'last_updated_time';
       ELSEIF table_name = 'JOBS_BY_ORGANIZATION' THEN
         SET time_col = 'creation_time';
+      ELSEIF table_name = 'JOBS_TIMELINE_BY_ORGANIZATION' THEN  -- ← NEW
+        SET time_col = 'job_creation_time';
       END IF;
 
       IF time_col IS NOT NULL THEN
@@ -741,19 +745,6 @@ BEGIN
         CONTINUE;
       END IF;
 
-      -- ── Per-project watermark / time-filter ──────────────────────────
-      --
-      --  Group A  TIMESTAMP cols — pure append, watermark per project:
-      --           JOBS, JOBS_TIMELINE,
-      --           RESERVATIONS_TIMELINE, RESERVATION_CHANGES,
-      --           CAPACITY_COMMITMENT_CHANGES, ASSIGNMENT_CHANGES,
-      --           SHARED_DATASET_USAGE, INSIGHTS
-      --
-      --  Group B  DATE col — pure append, watermark per project:
-      --           TABLE_STORAGE_USAGE_TIMELINE (usage_date)
-      --
-      --  Everything else — full replace (DELETE + INSERT)
-      --
       IF table_name IN (
             'JOBS',
             'JOBS_TIMELINE',
@@ -812,7 +803,6 @@ BEGIN
         SET time_filter = 'WHERE TRUE';
       END IF;
 
-      -- ── Append this project's SELECT to the batch ─────────────────────
       IF batch_union_sql != '' THEN
         SET batch_union_sql = batch_union_sql || '\nUNION ALL\n';
       END IF;
@@ -827,10 +817,8 @@ BEGIN
 
       SET batch_count = batch_count + 1;
 
-      -- ── Flush when batch is full ──────────────────────────────────────
       IF batch_count >= batch_size THEN
 
-        -- Timeseries tables are append-only — skip the DELETE
         IF table_name NOT IN (
               'JOBS',
               'JOBS_TIMELINE',
@@ -946,7 +934,6 @@ BEGIN
   END FOR;  -- tables
 
 END;
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Wrapper: resolves project_ids from projects_table then calls main procedure
 -- ─────────────────────────────────────────────────────────────────────────────
