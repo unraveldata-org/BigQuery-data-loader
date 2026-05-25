@@ -541,6 +541,7 @@ BEGIN
     STRUCT('JOBS_BY_ORGANIZATION',               'INCREMENTAL_APPEND', 'creation_time',     'TIMESTAMP', CAST(NULL AS STRING), 'DATE(creation_time)',     'project_id, user_email', TRUE),
     STRUCT('JOBS_TIMELINE_BY_ORGANIZATION',      'INCREMENTAL_APPEND', 'job_creation_time', 'TIMESTAMP', CAST(NULL AS STRING), 'DATE(job_creation_time)', 'project_id, user_email', TRUE),
     STRUCT('STREAMING_TIMELINE_BY_ORGANIZATION', 'INCREMENTAL_APPEND', 'start_timestamp',   'TIMESTAMP', CAST(NULL AS STRING), 'DATE(start_timestamp)',   'project_id, dataset_id, table_id',   TRUE),
+    STRUCT('WRITE_API_TIMELINE_BY_ORGANIZATION', 'INCREMENTAL_APPEND', 'start_timestamp',   'TIMESTAMP', CAST(NULL AS STRING), 'DATE(start_timestamp)',   'project_id, dataset_id, table_id',             TRUE),
 
     -- ── BY_ORGANIZATION — stateful (recommendations): MERGE on natural key ──
     -- Uses SNAPSHOT_MERGE strategy with is_by_org=TRUE; _flush_batch handles
@@ -1129,3 +1130,5 @@ BEGIN
   );
 
 END;
+
+
