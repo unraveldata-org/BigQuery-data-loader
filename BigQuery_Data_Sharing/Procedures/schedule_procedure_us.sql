@@ -186,21 +186,16 @@ BEGIN
   END IF;
 
   -- ── Check whether projects_table already exists ──────────────────────────
-  -- INFORMATION_SCHEMA.TABLES returns a row only if the table is present;
-  -- INTO receives NULL if no row matches, so we default-to-FALSE safely.
   BEGIN
-  -- Try to get the watermark; if this fails, the table doesn't exist
-  EXECUTE IMMEDIATE FORMAT("SELECT MAX(last_seen) FROM `%s.projects_table`", dataset_name) 
-  INTO last_export_ts;
-  SET table_exists = TRUE;
-EXCEPTION WHEN ERROR THEN
-  -- If we land here, the table likely doesn't exist
-  SET table_exists = FALSE;
-END;
+    EXECUTE IMMEDIATE FORMAT("SELECT MAX(last_seen) FROM `%s.projects_table`", dataset_name)
+    INTO last_export_ts;
+    SET table_exists = TRUE;
+  EXCEPTION WHEN ERROR THEN
+    SET table_exists = FALSE;
+  END;
 
   -- ════════════════════════════════════════════════════════════════════════
   -- FIRST RUN — table does not exist yet
-  -- Create it and load all project IDs with no time filter.
   -- ════════════════════════════════════════════════════════════════════════
   IF NOT table_exists THEN
 
@@ -220,7 +215,6 @@ END;
       RAISE USING MESSAGE = "ERROR: Failed to create projects_table – " || @@error.message;
     END;
 
-    -- Full initial load — no export_time filter
     SET exec_sql = FORMAT("""
       INSERT INTO `%s.projects_table` (project_id, first_seen, last_seen)
       SELECT
@@ -248,20 +242,14 @@ END;
 
   -- ════════════════════════════════════════════════════════════════════════
   -- SUBSEQUENT RUNS — table already exists
-  -- Watermark = MAX(last_seen) already recorded in projects_table.
-  -- Scan only billing rows with export_time > watermark, then MERGE
-  -- so that new project IDs are inserted and existing ones get their
-  -- last_seen timestamp bumped.
   -- ════════════════════════════════════════════════════════════════════════
   ELSE
 
-    -- Derive watermark from the projects_table itself (last_seen column)
     EXECUTE IMMEDIATE FORMAT("""
       SELECT MAX(last_seen) FROM `%s.projects_table`
     """, dataset_name)
     INTO last_export_ts;
 
-    -- If somehow last_seen is all NULL fall back to a full re-scan
     IF last_export_ts IS NULL THEN
       SET last_export_ts = TIMESTAMP('1970-01-01 00:00:00 UTC');
     END IF;
@@ -290,7 +278,7 @@ END;
     """,
     dataset_name,
     billing_export_project, billing_dataset, billing_table,
-    FORMAT_TIMESTAMP('%F', last_export_ts), -- For _PARTITIONDATE
+    FORMAT_TIMESTAMP('%F', last_export_ts),
     FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_export_ts),
     FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
 
@@ -304,6 +292,9 @@ END;
 
 END;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- export_billing_data_incremental
+-- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_billing_data_incremental(
   dataset_name           STRING,
   look_back_days         INT64,
@@ -436,7 +427,182 @@ END;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- export_metadata_incremental_US
+-- NEW HELPER: _build_typed_select
+--
+-- For a given source (project-level or BY_ORG INFORMATION_SCHEMA view) and
+-- a physical destination table, builds a SELECT expression list where:
+--
+--   • Columns present in both source and destination with matching types
+--     are selected as-is.
+--   • Columns present in both but with different complex types (STRUCT/ARRAY)
+--     are wrapped in CAST(col AS <dest_type>) to coerce the source schema
+--     into the destination schema. BigQuery fills missing sub-fields with NULL.
+--   • Columns present only in the destination (source doesn't have them)
+--     are emitted as CAST(NULL AS <dest_type>) AS col.
+--
+-- This ensures every branch of a UNION ALL produces columns with identical
+-- types matching the destination table, regardless of per-project schema
+-- differences in INFORMATION_SCHEMA views.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE PROCEDURE unravel_share_us_new._build_typed_select(
+  dataset_name     STRING,   -- destination dataset, e.g. 'unravel_share_us_new'
+  dest_table_name  STRING,   -- destination table,  e.g. 'JOBS_US'
+  source_project   STRING,   -- source GCP project (NULL for BY_ORG)
+  region           STRING,   -- e.g. 'US'
+  source_view      STRING,   -- INFORMATION_SCHEMA view name, e.g. 'JOBS'
+  is_by_org        BOOL,     -- TRUE → region-level view, FALSE → project-level
+  OUT typed_select STRING     -- the generated SELECT expression list
+)
+BEGIN
+
+  DECLARE src_temp   STRING;
+  DECLARE run_uuid   STRING DEFAULT REPLACE(GENERATE_UUID(), '-', '_');
+  DECLARE exec_sql   STRING;
+
+  -- We use a temp table name that won't collide across concurrent calls
+  SET src_temp = CONCAT('_src_schema_', run_uuid);
+
+  -- ── 1. Create a LIMIT 0 temp table from the SOURCE view ──────────────
+  --    This captures the source's actual schema (including nested STRUCTs)
+  --    as a physical temp table whose columns we can introspect via
+  --    INFORMATION_SCHEMA.COLUMNS.
+  IF is_by_org THEN
+    SET exec_sql = FORMAT("""
+      CREATE TEMP TABLE `%s` AS
+      SELECT * FROM `region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+    """, src_temp, region, source_view);
+  ELSE
+    SET exec_sql = FORMAT("""
+      CREATE TEMP TABLE `%s` AS
+      SELECT * FROM `%s.region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+    """, src_temp, source_project, region, source_view);
+  END IF;
+
+  BEGIN
+    EXECUTE IMMEDIATE exec_sql;
+  EXCEPTION WHEN ERROR THEN
+    -- If we can't even read the source schema, return NULL so the caller
+    -- can fall back or log an error.
+    SET typed_select = NULL;
+    RETURN;
+  END;
+
+  -- ── 2. Build the typed SELECT list ────────────────────────────────────
+  --    Join destination columns (from the physical table, queryable via
+  --    INFORMATION_SCHEMA.COLUMNS) against source columns (from the temp
+  --    table, also queryable via INFORMATION_SCHEMA.COLUMNS on the temp
+  --    schema).
+  --
+  --    • dest has column, source has it, types match     → column_name
+  --    • dest has column, source has it, types differ    → CAST(col AS dest_type) AS col
+  --    • dest has column, source doesn't have it         → CAST(NULL AS dest_type) AS col
+  --
+  --    We skip region, project, ingestion_ts because those are added by
+  --    the caller.
+  SET exec_sql = FORMAT("""
+    SELECT STRING_AGG(
+      CASE
+        -- Column missing from source: emit typed NULL
+        WHEN src.column_name IS NULL THEN
+          FORMAT('CAST(NULL AS %%s) AS %%s', dest.data_type, dest.column_name)
+        -- Column exists in both and types match exactly: use as-is
+        WHEN dest.data_type = src.data_type THEN
+          dest.column_name
+        -- Column exists but types differ (complex type evolution): CAST to dest type
+        ELSE
+          FORMAT('CAST(%%s AS %%s) AS %%s',
+                 dest.column_name, dest.data_type, dest.column_name)
+      END,
+      ', '
+      ORDER BY dest.ordinal_position
+    )
+    FROM (
+      SELECT column_name, data_type, ordinal_position
+      FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
+      WHERE table_catalog = '%s'
+        AND table_schema  = '%s'
+        AND table_name    = '%s'
+        AND column_name NOT IN ('region', 'project', 'ingestion_ts')
+    ) dest
+    LEFT JOIN (
+      SELECT column_name, data_type
+      FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
+      WHERE table_catalog = '%s'
+        AND table_schema  = '%s'
+        AND table_name    = '%s'
+    ) src
+    ON dest.column_name = src.column_name
+  """,
+  -- destination table columns (physical table → works with INFORMATION_SCHEMA)
+  region, @@project_id, dataset_name, dest_table_name,
+  -- source temp table columns (also physical → works with INFORMATION_SCHEMA)
+  region, @@project_id, '_script', src_temp);
+  -- Note: BigQuery temp tables live in a hidden dataset; their catalog is
+  -- the current project and schema is typically shown in INFORMATION_SCHEMA
+  -- for temp tables under the session. We query them via the same region
+  -- INFORMATION_SCHEMA. If the temp table schema name differs in your
+  -- environment, see the fallback below.
+
+  BEGIN
+    EXECUTE IMMEDIATE exec_sql INTO typed_select;
+  EXCEPTION WHEN ERROR THEN
+    -- Fallback: try querying temp table columns from the default project-level
+    -- INFORMATION_SCHEMA (without region prefix) since temp tables sometimes
+    -- appear there instead.
+    BEGIN
+      SET exec_sql = FORMAT("""
+        SELECT STRING_AGG(
+          CASE
+            WHEN src.column_name IS NULL THEN
+              FORMAT('CAST(NULL AS %%s) AS %%s', dest.data_type, dest.column_name)
+            WHEN dest.data_type = src.data_type THEN
+              dest.column_name
+            ELSE
+              FORMAT('CAST(%%s AS %%s) AS %%s',
+                     dest.column_name, dest.data_type, dest.column_name)
+          END,
+          ', '
+          ORDER BY dest.ordinal_position
+        )
+        FROM (
+          SELECT column_name, data_type, ordinal_position
+          FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
+          WHERE table_catalog = '%s'
+            AND table_schema  = '%s'
+            AND table_name    = '%s'
+            AND column_name NOT IN ('region', 'project', 'ingestion_ts')
+        ) dest
+        LEFT JOIN (
+          SELECT column_name, data_type
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE table_name = '%s'
+        ) src
+        ON dest.column_name = src.column_name
+      """,
+      region, @@project_id, dataset_name, dest_table_name,
+      src_temp);
+
+      EXECUTE IMMEDIATE exec_sql INTO typed_select;
+    EXCEPTION WHEN ERROR THEN
+      SET typed_select = NULL;
+    END;
+  END;
+
+  -- ── 3. Cleanup temp table ─────────────────────────────────────────────
+  EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s`", src_temp);
+
+END;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- export_metadata_incremental_US  (UPDATED)
+--
+-- Changes from original:
+--   • Calls _build_typed_select for each source (per-project or BY_ORG)
+--     to produce a typed SELECT list that handles schema mismatches.
+--   • Uses typed_select (instead of col_list) in every SELECT from source
+--     INFORMATION_SCHEMA views.
+--   • col_list is still used for the INSERT column list (just plain names).
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US(
   dataset_name   STRING,
@@ -453,14 +619,6 @@ BEGIN
   -- ALL DECLARE statements must come first (BigQuery script rule)
   -- ═════════════════════════════════════════════════════════════════════
 
-  -- Per-table config
-  -- strategy: one of 'INCREMENTAL_APPEND', 'SNAPSHOT_MERGE', 'AUDIT_APPEND'
-  -- time_col: timestamp/date column for watermark (INCREMENTAL_APPEND, AUDIT_APPEND)
-  -- time_col_type: 'TIMESTAMP' or 'DATE' (affects watermark predicate)
-  -- merge_keys: comma-separated natural-key columns (SNAPSHOT_MERGE only)
-  -- partition_col_expr: PARTITION BY expression (e.g. 'DATE(creation_time)')
-  -- cluster_cols: CLUSTER BY columns
-  -- is_by_org: TRUE if source is region-<region>.INFORMATION_SCHEMA.X (no project prefix)
   DECLARE config ARRAY<STRUCT<
     table_name        STRING,
     strategy          STRING,
@@ -472,8 +630,7 @@ BEGIN
     is_by_org         BOOL
   >>;
 
-  -- Working variables
-  DECLARE current_table     STRING;  -- renamed from table_name to avoid shadowing struct field
+  DECLARE current_table     STRING;
   DECLARE cfg               STRUCT<
     table_name STRING, strategy STRING, time_col STRING, time_col_type STRING,
     merge_keys STRING, partition_col_expr STRING, cluster_cols STRING, is_by_org BOOL>;
@@ -496,11 +653,13 @@ BEGIN
   DECLARE batch_union_sql   STRING;
   DECLARE batch_projects    ARRAY<STRING>;
 
+  -- ═══ NEW: typed select for schema-safe SELECTs ═══
+  DECLARE typed_select      STRING;
+
   -- ═════════════════════════════════════════════════════════════════════
-  -- Statements begin here
+  -- Populate config
   -- ═════════════════════════════════════════════════════════════════════
 
-  -- Populate config
   SET config = [
     -- ── Per-project incremental append (time watermark) ──────────────────
     STRUCT('JOBS'                        AS table_name, 'INCREMENTAL_APPEND' AS strategy, 'creation_time'     AS time_col, 'TIMESTAMP' AS time_col_type, CAST(NULL AS STRING) AS merge_keys, 'DATE(creation_time)'     AS partition_col_expr, 'project_id, user_email' AS cluster_cols, FALSE AS is_by_org),
@@ -544,9 +703,6 @@ BEGIN
     STRUCT('WRITE_API_TIMELINE_BY_ORGANIZATION', 'INCREMENTAL_APPEND', 'start_timestamp',   'TIMESTAMP', CAST(NULL AS STRING), 'DATE(start_timestamp)',   'project_id, dataset_id, table_id',             TRUE),
 
     -- ── BY_ORGANIZATION — stateful (recommendations): MERGE on natural key ──
-    -- Uses SNAPSHOT_MERGE strategy with is_by_org=TRUE; _flush_batch handles
-    -- the BY_ORG merge path (no project column in key, source scanned once
-    -- from region-level view).
     STRUCT('RECOMMENDATIONS_BY_ORGANIZATION',    'SNAPSHOT_MERGE',     CAST(NULL AS STRING), CAST(NULL AS STRING),
            'project_id, recommender, subtype, recommendation_id',
            CAST(NULL AS STRING), 'project_id, recommender', TRUE)
@@ -583,7 +739,6 @@ BEGIN
     SET current_table = table_row.f0_;
 
     -- Lookup config for this table
-    -- Note: use current_table (not table_name) to avoid shadowing c.table_name
     SET cfg = (
       SELECT AS STRUCT * FROM UNNEST(config) c WHERE c.table_name = current_table LIMIT 1
     );
@@ -720,27 +875,40 @@ BEGIN
     -- ═════════════════════════════════════════════════════════════════════
     IF cfg.is_by_org THEN
 
+      -- ══ NEW: Build typed_select for BY_ORG source ══
+      CALL unravel_share_us_new._build_typed_select(
+        dataset_name, dest_table_name,
+        CAST(NULL AS STRING),  -- source_project = NULL for BY_ORG
+        region, current_table,
+        TRUE,                  -- is_by_org
+        typed_select
+      );
+
+      -- If _build_typed_select failed, fall back to plain col_list
+      IF typed_select IS NULL THEN
+        SET typed_select = col_list;
+      END IF;
+
       -- ── BY_ORG + SNAPSHOT_MERGE: delegate to _flush_batch ─────────────
       IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
 
-        -- Build the "batch" as a single SELECT from the region-level view
         SET batch_union_sql = FORMAT("""
           SELECT %s, '%s' AS region
           FROM `region-%s`.INFORMATION_SCHEMA.%s
-        """, col_list, region, region, current_table);
+        """, typed_select, region, region, current_table);
 
         CALL unravel_share_us_new._flush_batch(
           dataset_name, dest_table_name, col_list, region,
           batch_union_sql,
-          CAST([] AS ARRAY<STRING>),  -- batch_projects: unused for BY_ORG merge
+          CAST([] AS ARRAY<STRING>),
           cfg.strategy, cfg.merge_keys,
-          TRUE,                        -- is_by_org
+          TRUE,
           current_run_ts);
 
-        CONTINUE;  -- next table
+        CONTINUE;
       END IF;
 
-      -- ── BY_ORG + INCREMENTAL_APPEND (and legacy non-incremental fallback) ──
+      -- ── BY_ORG + INCREMENTAL_APPEND ───────────────────────────────────
       IF cfg.time_col IS NOT NULL THEN
         EXECUTE IMMEDIATE FORMAT("""
           SELECT MAX(%s) FROM `%s.%s`
@@ -757,8 +925,6 @@ BEGIN
           cfg.time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', last_sync_ts),
           cfg.time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
       ELSE
-        -- Non-incremental BY_ORG without merge keys: full replace for this region
-        -- (kept for backward compatibility; prefer SNAPSHOT_MERGE going forward)
         SET exec_sql = FORMAT("""
           DELETE FROM `%s.%s` WHERE region = '%s'
         """, dataset_name, dest_table_name, region);
@@ -777,13 +943,14 @@ BEGIN
         SET time_filter = 'WHERE TRUE';
       END IF;
 
+      -- ══ Use typed_select in the SELECT from source ══
       SET exec_sql = FORMAT("""
         INSERT INTO `%s.%s` (%s, region, ingestion_ts)
         SELECT %s, '%s', CURRENT_TIMESTAMP()
         FROM `region-%s`.INFORMATION_SCHEMA.%s
         %s
       """, dataset_name, dest_table_name, col_list,
-           col_list, region,
+           typed_select, region,
            region, current_table,
            time_filter);
 
@@ -797,7 +964,7 @@ BEGIN
            'BY_ORG insert failed: ' || @@error.message, exec_sql, CURRENT_TIMESTAMP());
       END;
 
-      CONTINUE;  -- next table
+      CONTINUE;
     END IF;
 
     -- ═════════════════════════════════════════════════════════════════════
@@ -821,6 +988,28 @@ BEGIN
         CONTINUE;
       END IF;
 
+      -- ══ NEW: Build typed_select for THIS specific project ══
+      -- Each project may have a different source schema, so we call
+      -- _build_typed_select per project to get the correct CAST expressions.
+      CALL unravel_share_us_new._build_typed_select(
+        dataset_name, dest_table_name,
+        project_id,            -- source_project
+        region, current_table,
+        FALSE,                 -- is_by_org = FALSE
+        typed_select
+      );
+
+      -- If _build_typed_select failed for this project, fall back to col_list
+      IF typed_select IS NULL THEN
+        INSERT INTO `unravel_share_us_new.error_log`
+          (run_ts, dest_table, project_id, error_message, failed_sql, logged_at)
+        VALUES
+          (current_run_ts, dest_table_name, project_id,
+           '_build_typed_select returned NULL – could not introspect source schema',
+           NULL, CURRENT_TIMESTAMP());
+        CONTINUE;
+      END IF;
+
       -- ── Resolve per-project time_filter ────────────────────────────────
       IF cfg.strategy IN ('INCREMENTAL_APPEND', 'AUDIT_APPEND') THEN
 
@@ -840,7 +1029,6 @@ BEGIN
             cfg.time_col, FORMAT_DATE('%F', last_sync_date),
             cfg.time_col, FORMAT_DATE('%F', CURRENT_DATE()));
         ELSE
-          -- TIMESTAMP
           EXECUTE IMMEDIATE FORMAT("""
             SELECT MAX(%s) FROM `%s.%s`
             WHERE project = '%s' AND region = '%s'
@@ -858,20 +1046,20 @@ BEGIN
         END IF;
 
       ELSE
-        -- SNAPSHOT_MERGE: no time filter
         SET time_filter = 'WHERE TRUE';
       END IF;
 
-      -- ── Append to batch ────────────────────────────────────────────────
+      -- ── Append to batch (using typed_select for SELECT) ────────────────
       IF batch_union_sql != '' THEN
         SET batch_union_sql = batch_union_sql || '\nUNION ALL\n';
       END IF;
 
+      -- ══ KEY CHANGE: typed_select instead of col_list in the SELECT ══
       SET batch_union_sql = batch_union_sql || FORMAT("""
         SELECT %s, '%s' AS region, '%s' AS project
         FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
         %s
-      """, col_list, region, project_id,
+      """, typed_select, region, project_id,
            project_id, region, current_table,
            time_filter);
 
@@ -883,7 +1071,7 @@ BEGIN
         CALL unravel_share_us_new._flush_batch(
           dataset_name, dest_table_name, col_list, region,
           batch_union_sql, batch_projects, cfg.strategy, cfg.merge_keys,
-          FALSE,  -- is_by_org
+          FALSE,
           current_run_ts);
         SET batch_union_sql = '';
         SET batch_projects  = [];
@@ -897,7 +1085,7 @@ BEGIN
       CALL unravel_share_us_new._flush_batch(
         dataset_name, dest_table_name, col_list, region,
         batch_union_sql, batch_projects, cfg.strategy, cfg.merge_keys,
-        FALSE,  -- is_by_org
+        FALSE,
         current_run_ts);
     END IF;
 
@@ -908,22 +1096,6 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Helper procedure: flush a single batch
---
--- Strategy-aware & BY_ORG-aware:
---
---   INCREMENTAL_APPEND / AUDIT_APPEND
---     Plain INSERT. For per-project: inserts (col_list, region, project, ingestion_ts).
---     (This procedure is only called for per-project append paths; BY_ORG append
---      is handled inline in the main procedure.)
---
---   SNAPSHOT_MERGE, is_by_org = FALSE
---     MERGE on (region, project, <merge_keys>), scoped via batch_projects,
---     with WHEN NOT MATCHED BY SOURCE … DELETE to drop vanished rows.
---
---   SNAPSHOT_MERGE, is_by_org = TRUE
---     MERGE on (region, <merge_keys>), scoped by region only (no project column),
---     with WHEN NOT MATCHED BY SOURCE … DELETE for this region. batch_projects
---     is ignored.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._flush_batch(
   dataset_name     STRING,
@@ -944,13 +1116,12 @@ BEGIN
   DECLARE set_clause  STRING;
   DECLARE insert_cols STRING;
   DECLARE insert_vals STRING;
-  DECLARE source_scope STRING;  -- identifies the caller for error_log
+  DECLARE source_scope STRING;
 
   SET source_scope = IF(is_by_org, 'BY_ORG_MERGE', 'BATCH');
 
   IF strategy IN ('INCREMENTAL_APPEND', 'AUDIT_APPEND') THEN
 
-    -- Append path is per-project only (BY_ORG append is handled in main proc).
     SET exec_sql = FORMAT("""
       INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
       SELECT batch_rows.*, CURRENT_TIMESTAMP()
@@ -971,22 +1142,18 @@ BEGIN
 
     IF is_by_org THEN
 
-      -- ── BY_ORG MERGE (no project column) ─────────────────────────────
-      -- ON clause: tgt.region = src.region AND tgt.k1 = src.k1 AND ...
       SET on_clause = 'tgt.region = src.region';
       SET on_clause = (
         SELECT on_clause || ' AND ' || STRING_AGG(FORMAT('tgt.%s = src.%s', k, k), ' AND ')
         FROM UNNEST(SPLIT(merge_keys, ', ')) AS k
       );
 
-      -- UPDATE SET: every non-key, non-meta column + ingestion_ts
       SET set_clause = (
         SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ')
         FROM UNNEST(SPLIT(col_list, ', ')) AS c
       );
       SET set_clause = set_clause || ', ingestion_ts = CURRENT_TIMESTAMP()';
 
-      -- INSERT column list and VALUES (no project column for BY_ORG tables)
       SET insert_cols = col_list || ', region, ingestion_ts';
       SET insert_vals = (
         SELECT STRING_AGG(FORMAT('src.%s', c), ', ')
@@ -994,7 +1161,6 @@ BEGIN
       );
       SET insert_vals = insert_vals || ', src.region, CURRENT_TIMESTAMP()';
 
-      -- DELETE-orphans scope: this region only
       SET exec_sql = FORMAT("""
         MERGE `%s.%s` AS tgt
         USING (%s) AS src
@@ -1026,22 +1192,18 @@ BEGIN
 
     ELSE
 
-      -- ── Per-project MERGE ────────────────────────────────────────────
-      -- ON clause: tgt.region=src.region AND tgt.project=src.project AND <keys>
       SET on_clause = 'tgt.region = src.region AND tgt.project = src.project';
       SET on_clause = (
         SELECT on_clause || ' AND ' || STRING_AGG(FORMAT('tgt.%s = src.%s', k, k), ' AND ')
         FROM UNNEST(SPLIT(merge_keys, ', ')) AS k
       );
 
-      -- UPDATE SET clause
       SET set_clause = (
         SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ')
         FROM UNNEST(SPLIT(col_list, ', ')) AS c
       );
       SET set_clause = set_clause || ', ingestion_ts = CURRENT_TIMESTAMP()';
 
-      -- INSERT columns and values
       SET insert_cols = col_list || ', region, project, ingestion_ts';
       SET insert_vals = (
         SELECT STRING_AGG(FORMAT('src.%s', c), ', ')
@@ -1049,7 +1211,6 @@ BEGIN
       );
       SET insert_vals = insert_vals || ', src.region, src.project, CURRENT_TIMESTAMP()';
 
-      -- DELETE-orphans scope: region + projects in this batch
       SET exec_sql = FORMAT("""
         MERGE `%s.%s` AS tgt
         USING (%s) AS src
@@ -1093,6 +1254,8 @@ BEGIN
   END IF;
 
 END;
+
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Wrapper: resolves project_ids from projects_table then calls main procedure
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -1130,5 +1293,3 @@ BEGIN
   );
 
 END;
-
-
