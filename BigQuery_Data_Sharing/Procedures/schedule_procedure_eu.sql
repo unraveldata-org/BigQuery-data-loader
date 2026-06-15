@@ -884,6 +884,8 @@ BEGIN
   DECLARE fallback_project STRING;
   DECLARE fallback_sql STRING;
   DECLARE fallback_time_clause STRING;
+  DECLARE fallback_last_sync_ts TIMESTAMP;
+  DECLARE fallback_last_sync_date DATE;
 
   SET source_scope = IF(cfg.is_by_org, 'BY_ORG_MERGE', 'BATCH');
 
@@ -906,8 +908,21 @@ BEGIN
         FOR idx IN (SELECT p FROM UNNEST(batch_projects) AS p) DO
           SET fallback_project = idx.p;
           
-          IF batch_time_filter IS NOT NULL AND UPPER(batch_time_filter) LIKE 'WHERE %' THEN
-            SET fallback_time_clause = CONCAT("AND ", SUBSTRING(batch_time_filter, 7));
+          IF cfg.time_col IS NOT NULL THEN
+            IF cfg.time_col_type = 'DATE' THEN
+              EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE project='%s' AND region='%s'",
+                cfg.time_col, dataset_name, dest_table_name, fallback_project, region) INTO fallback_last_sync_date;
+              IF fallback_last_sync_date IS NULL THEN SET fallback_last_sync_date = DATE_SUB(CURRENT_DATE(), INTERVAL lookback_days DAY); END IF;
+              SET fallback_time_clause = FORMAT("AND %s > DATE '%s' AND %s <= DATE '%s'",
+                cfg.time_col, FORMAT_DATE('%F', fallback_last_sync_date), cfg.time_col, FORMAT_DATE('%F', CURRENT_DATE()));
+            ELSE
+              EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE project='%s' AND region='%s'",
+                cfg.time_col, dataset_name, dest_table_name, fallback_project, region) INTO fallback_last_sync_ts;
+              IF fallback_last_sync_ts IS NULL THEN SET fallback_last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY); END IF;
+              SET fallback_time_clause = FORMAT("AND %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
+                cfg.time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', fallback_last_sync_ts),
+                cfg.time_col, FORMAT_TIMESTAMP('%F %H:%M:%E6S', current_run_ts));
+            END IF;
           ELSE
             SET fallback_time_clause = "AND TRUE";
           END IF;
