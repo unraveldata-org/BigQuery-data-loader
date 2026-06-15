@@ -79,7 +79,7 @@ BEGIN
   IF billing_export_project IS NULL OR billing_export_project = '' THEN RAISE USING MESSAGE = "ERROR: billing_export_project is empty!"; END IF;
   IF billing_dataset IS NULL OR billing_dataset = '' THEN RAISE USING MESSAGE = "ERROR: billing_dataset is empty!"; END IF;
   IF billing_table IS NULL OR billing_table = '' THEN RAISE USING MESSAGE = "ERROR: billing_table is empty!"; END IF;
-  IF ARRAY_LENGTH(monitored_tables) = 0 THEN RAISE USING MESSAGE = "ERROR: monitored_tables parameter array cannot be empty!"; END IF;
+  IF monitored_tables IS NULL OR ARRAY_LENGTH(monitored_tables) = 0 THEN RAISE USING MESSAGE = "ERROR: monitored_tables parameter array cannot be empty!"; END IF;
 
   BEGIN
     EXECUTE IMMEDIATE FORMAT("SELECT MAX(last_seen) FROM `%s.%s`", dataset_name, projects_table_name) INTO last_export_ts;
