@@ -60,7 +60,7 @@ BEGIN
 END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 2. create_projects_table (Seedes root entries & handles dynamic project configurations)
+-- 2. create_projects_table (Seeds root entries & handles dynamic project configurations)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new_projects_list.create_projects_table(
   dataset_name STRING, 
