@@ -656,8 +656,8 @@ BEGIN
 
   IF region IS NULL THEN RAISE USING MESSAGE = "region is NULL!"; END IF;
   IF dataset_name IS NULL THEN RAISE USING MESSAGE = "dataset_name is NULL!"; END IF;
-  IF ARRAY_LENGTH(tables) = 0 THEN RAISE USING MESSAGE = "tables array is empty!"; END IF;
-  IF ARRAY_LENGTH(project_ids) = 0 THEN RAISE USING MESSAGE = "project_ids array is empty!"; END IF;
+  IF tables IS NULL OR ARRAY_LENGTH(tables) = 0 THEN RAISE USING MESSAGE = "tables array is empty!"; END IF;
+  IF project_ids IS NULL OR ARRAY_LENGTH(project_ids) = 0 THEN RAISE USING MESSAGE = "project_ids array is empty!"; END IF;
 
   FOR table_row IN (SELECT * FROM UNNEST(tables)) DO
     SET current_table = table_row.f0_;
