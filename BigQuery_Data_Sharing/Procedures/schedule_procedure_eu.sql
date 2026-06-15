@@ -52,9 +52,10 @@ BEGIN
     EXECUTE IMMEDIATE FORMAT("""
       UPDATE `%s`
       SET access_allowed = FALSE,
-          reason = '%s'
-      WHERE project_id = '%s' AND table_name = '%s'
-    """, control_ledger, REPLACE(raw_error, "'", "\\'"), target_project, target_table);
+          reason = @reason
+      WHERE project_id = @project_id AND table_name = @table_name
+    """, control_ledger)
+    USING raw_error AS reason, target_project AS project_id, target_table AS table_name;
   END IF;
 END;
 
