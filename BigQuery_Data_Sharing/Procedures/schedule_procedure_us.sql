@@ -216,11 +216,11 @@ BEGIN
   IF last_sync_ts IS NULL THEN SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL look_back_days DAY); END IF;
 
   SET exec_sql = FORMAT("""
-    INSERT INTO `%s.%s`
+    INSERT INTO `%s.%s` (%s, ingestion_ts)
     SELECT %s, CURRENT_TIMESTAMP() AS ingestion_ts FROM `%s.%s.%s`
     WHERE export_time > TIMESTAMP '%s' AND export_time <= TIMESTAMP '%s'
       AND service.id IN ('650B-3C82-34DB','16B8-3DDA-9F10','DCC9-8DB9-673F','24E6-581D-38E5')
-  """, dataset_name, dest_table, typed_billing_select,
+  """, dataset_name, dest_table, billing_col_list, typed_billing_select,
     billing_export_project, billing_dataset, billing_table,
     FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts), FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
     
