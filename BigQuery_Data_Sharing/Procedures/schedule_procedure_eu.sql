@@ -578,11 +578,11 @@ END;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 5. export_metadata_incremental_US 
+-- 5. export_metadata_incremental_EU 
 -- ✨ MODIFIED: Added job_timeout_hours parameter & enable_end_time_check config flag
 --    Captures state changes for jobs that were RUNNING but completed in current sync
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_EU_new.export_metadata_incremental_US(
+CREATE OR REPLACE PROCEDURE unravel_share_EU_new.export_metadata_incremental_EU(
   dataset_name   STRING,
   lookback_days  INT64,
   tables         ARRAY<STRING>,
@@ -1088,7 +1088,7 @@ END;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 7. Wrapper (Updated to accept and pass job_timeout_hours parameter)
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_EU_new.export_metadata_incremental_US_all_projects(
+CREATE OR REPLACE PROCEDURE unravel_share_EU_new.export_metadata_incremental_EU_all_projects(
   dataset_name STRING, 
   lookback_days INT64, 
   tables ARRAY<STRING>, 
@@ -1125,7 +1125,7 @@ BEGIN
       CONTINUE;
     END IF;
     
-    CALL unravel_share_EU_new.export_metadata_incremental_US(
+    CALL unravel_share_EU_new.export_metadata_incremental_EU(
       dataset_name, lookback_days, [current_loop_table], region, project_ids, retention_days, batch_size, projects_table, job_timeout_hours);
   END FOR;
 END;
