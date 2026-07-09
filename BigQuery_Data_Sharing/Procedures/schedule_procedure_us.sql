@@ -3,7 +3,7 @@ SET @@location = 'US';
 CREATE SCHEMA IF NOT EXISTS unravel_share_us_new
   OPTIONS (location = 'US');
 
-CREATE SCHEMA IF NOT EXISTS unravel_share_us_new_projects_list
+CREATE SCHEMA IF NOT EXISTS unravel_share_us_projects_list
   OPTIONS (location = 'US');
 
 CREATE TABLE IF NOT EXISTS `unravel_share_us_new.error_log`
@@ -70,11 +70,11 @@ END;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. create_projects_table (Seeds root entries & handles dynamic project configurations)
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE PROCEDURE unravel_share_us_new_projects_list.create_projects_table(
-  dataset_name STRING, 
-  projects_table_name STRING, 
-  billing_export_project STRING, 
-  billing_dataset STRING, 
+CREATE OR REPLACE PROCEDURE unravel_share_us_projects_list.create_projects_table(
+  dataset_name STRING,
+  projects_table_name STRING,
+  billing_export_project STRING,
+  billing_dataset STRING,
   billing_table STRING,
   monitored_tables ARRAY<STRING>
 )
@@ -602,10 +602,9 @@ CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US(
   job_timeout_hours INT64
 )
 BEGIN
-  DECLARE config ARRAY<STRUCT<table_name STRING, strategy STRING, time_col STRING, time_col_type STRING, merge_keys STRING, partition_col_expr STRING, cluster_cols STRING, is_by_org BOOL, enable_end_time_check BOOL>>;
+  DECLARE config ARRAY<STRUCT<table_name STRING, strategy STRING, time_col STRING, time_col_type STRING, merge_keys STRING, partition_col_expr STRING, cluster_cols STRING, is_by_org BOOL, enable_end_time_check BOOL, end_time_col STRING>>;
   DECLARE current_table     STRING;
-  DECLARE cfg               STRUCT<table_name STRING, strategy STRING, time_col STRING, time_col_type STRING, merge_keys STRING, partition_col_expr STRING, cluster_cols STRING, is_by_org BOOL, enable_end_time_check BOOL>;
-  
+  DECLARE cfg               STRUCT<table_name STRING, strategy STRING, time_col STRING, time_col_type STRING, merge_keys STRING, partition_col_expr STRING, cluster_cols STRING, is_by_org BOOL, enable_end_time_check BOOL, end_time_col STRING>;
   DECLARE col_list          STRING;
   DECLARE dest_table_name   STRING;
   DECLARE baseline_project  STRING;
@@ -630,36 +629,38 @@ BEGIN
   DECLARE total_ddl_projects INT64;
   DECLARE test_project      STRING;
 
-  -- ✨ MODIFIED: Added enable_end_time_check flag for JOBS tables
+  -- ✨ MODIFIED: Using strategy to determine MERGE vs INSERT
+  -- INCREMENTAL_MERGE: uses MERGE to deduplicate (for JOBS and JOBS_TIMELINE)
+  -- INCREMENTAL_APPEND: uses INSERT (for other timelines)
   SET config = [
-    STRUCT('JOBS' AS table_name,'INCREMENTAL_APPEND' AS strategy,'creation_time' AS time_col,'TIMESTAMP' AS time_col_type,CAST(NULL AS STRING) AS merge_keys,'DATE(creation_time)' AS partition_col_expr,'project_id, user_email' AS cluster_cols,FALSE AS is_by_org,TRUE AS enable_end_time_check),
-    STRUCT('JOBS_TIMELINE','INCREMENTAL_APPEND','job_creation_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(job_creation_time)','project_id, user_email',FALSE,TRUE),
-    STRUCT('RESERVATIONS_TIMELINE','INCREMENTAL_APPEND','period_start','TIMESTAMP',CAST(NULL AS STRING),'DATE(period_start)','project_id',FALSE,FALSE),
-    STRUCT('TABLE_STORAGE_USAGE_TIMELINE','INCREMENTAL_APPEND','usage_date','DATE',CAST(NULL AS STRING),'usage_date','table_catalog',FALSE,FALSE),
-    STRUCT('RESERVATION_CHANGES','AUDIT_APPEND','change_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(change_timestamp)','project_id',FALSE,FALSE),
-    STRUCT('CAPACITY_COMMITMENT_CHANGES','AUDIT_APPEND','change_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(change_timestamp)','project_id',FALSE,FALSE),
-    STRUCT('ASSIGNMENT_CHANGES','AUDIT_APPEND','change_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(change_timestamp)','project_id',FALSE,FALSE),
-    STRUCT('SHARED_DATASET_USAGE','AUDIT_APPEND','job_start_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(job_start_time)','project_id, dataset_id',FALSE,FALSE),
-    STRUCT('TABLES','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE),
-    STRUCT('VIEWS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE),
-    STRUCT('MATERIALIZED_VIEWS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE),
-    STRUCT('TABLE_OPTIONS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name, option_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE),
-    STRUCT('TABLE_STORAGE','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE),
-    STRUCT('COLUMNS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name, column_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE),
-    STRUCT('SCHEMATA','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, location',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE),
-    STRUCT('SCHEMATA_OPTIONS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, option_name',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE),
-    STRUCT('SCHEMATA_LINKS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, linked_schema_catalog_number, linked_schema_name, shared_asset_id',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE),
-    STRUCT('SCHEMATA_REPLICAS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, replica_name, location',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE),
-    STRUCT('SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, replica_name, failover_reservation_name',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE),
-    STRUCT('ASSIGNMENTS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, assignment_id, job_type',CAST(NULL AS STRING),'project_id',FALSE,FALSE),
-    STRUCT('RESERVATIONS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, reservation_name',CAST(NULL AS STRING),'project_id',FALSE,FALSE),
-    STRUCT('CAPACITY_COMMITMENTS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, capacity_commitment_id',CAST(NULL AS STRING),'project_id',FALSE,FALSE),
-    STRUCT('INSIGHTS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, subtype, insight_id',CAST(NULL AS STRING),'project_id',FALSE,FALSE),
-    STRUCT('JOBS_BY_ORGANIZATION','INCREMENTAL_APPEND','creation_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(creation_time)' AS partition_col_expr,'project_id, user_email' AS cluster_cols,TRUE AS is_by_org,TRUE AS enable_end_time_check),
-    STRUCT('JOBS_TIMELINE_BY_ORGANIZATION','INCREMENTAL_APPEND','job_creation_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(job_creation_time)','project_id, user_email',TRUE,TRUE),
-    STRUCT('STREAMING_TIMELINE_BY_ORGANIZATION','INCREMENTAL_APPEND','start_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(start_timestamp)','project_id, dataset_id, table_id',TRUE,FALSE),
-    STRUCT('WRITE_API_TIMELINE_BY_ORGANIZATION','INCREMENTAL_APPEND','start_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(start_timestamp)','project_id, dataset_id, table_id',TRUE,FALSE),
-    STRUCT('RECOMMENDATIONS_BY_ORGANIZATION','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, recommender, subtype, recommendation_id',CAST(NULL AS STRING),'project_id, recommender',TRUE,FALSE)
+    STRUCT('JOBS' AS table_name,'INCREMENTAL_MERGE' AS strategy,'creation_time' AS time_col,'TIMESTAMP' AS time_col_type,CAST(NULL AS STRING) AS merge_keys,'DATE(creation_time)' AS partition_col_expr,'project_id, user_email' AS cluster_cols,FALSE AS is_by_org,TRUE AS enable_end_time_check,'end_time' AS end_time_col),
+    STRUCT('JOBS_TIMELINE','INCREMENTAL_MERGE','job_creation_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(job_creation_time)','project_id, user_email',FALSE,TRUE,'job_end_time'),
+    STRUCT('RESERVATIONS_TIMELINE','INCREMENTAL_APPEND','period_start','TIMESTAMP',CAST(NULL AS STRING),'DATE(period_start)','project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('TABLE_STORAGE_USAGE_TIMELINE','INCREMENTAL_APPEND','usage_date','DATE',CAST(NULL AS STRING),'usage_date','table_catalog',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('RESERVATION_CHANGES','AUDIT_APPEND','change_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(change_timestamp)','project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('CAPACITY_COMMITMENT_CHANGES','AUDIT_APPEND','change_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(change_timestamp)','project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('ASSIGNMENT_CHANGES','AUDIT_APPEND','change_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(change_timestamp)','project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('SHARED_DATASET_USAGE','AUDIT_APPEND','job_start_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(job_start_time)','project_id, dataset_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('TABLES','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('VIEWS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('MATERIALIZED_VIEWS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('TABLE_OPTIONS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name, option_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('TABLE_STORAGE','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('COLUMNS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'table_catalog, table_schema, table_name, column_name',CAST(NULL AS STRING),'table_catalog',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('SCHEMATA','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, location',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('SCHEMATA_OPTIONS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, option_name',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('SCHEMATA_LINKS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, linked_schema_catalog_number, linked_schema_name, shared_asset_id',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('SCHEMATA_REPLICAS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, replica_name, location',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'catalog_name, schema_name, replica_name, failover_reservation_name',CAST(NULL AS STRING),'catalog_name',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('ASSIGNMENTS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, assignment_id, job_type',CAST(NULL AS STRING),'project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('RESERVATIONS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, reservation_name',CAST(NULL AS STRING),'project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('CAPACITY_COMMITMENTS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, capacity_commitment_id',CAST(NULL AS STRING),'project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('INSIGHTS','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, subtype, insight_id',CAST(NULL AS STRING),'project_id',FALSE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('JOBS_BY_ORGANIZATION','INCREMENTAL_MERGE','creation_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(creation_time)' AS partition_col_expr,'project_id, user_email' AS cluster_cols,TRUE AS is_by_org,TRUE AS enable_end_time_check,'end_time' AS end_time_col),
+    STRUCT('JOBS_TIMELINE_BY_ORGANIZATION','INCREMENTAL_MERGE','job_creation_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(job_creation_time)','project_id, user_email',TRUE,TRUE,'job_end_time'),
+    STRUCT('STREAMING_TIMELINE_BY_ORGANIZATION','INCREMENTAL_APPEND','start_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(start_timestamp)','project_id, dataset_id, table_id',TRUE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('WRITE_API_TIMELINE_BY_ORGANIZATION','INCREMENTAL_APPEND','start_timestamp','TIMESTAMP',CAST(NULL AS STRING),'DATE(start_timestamp)','project_id, dataset_id, table_id',TRUE,FALSE,CAST(NULL AS STRING)),
+    STRUCT('RECOMMENDATIONS_BY_ORGANIZATION','SNAPSHOT_MERGE',CAST(NULL AS STRING),CAST(NULL AS STRING),'project_id, recommender, subtype, recommendation_id',CAST(NULL AS STRING),'project_id, recommender',TRUE,FALSE,CAST(NULL AS STRING))
   ];
 
   IF region IS NULL THEN RAISE USING MESSAGE = "region is NULL!"; END IF;
@@ -675,7 +676,7 @@ BEGIN
     SET cfg = (SELECT AS STRUCT * FROM UNNEST(config) c WHERE c.table_name = current_table LIMIT 1);
 
     IF cfg IS NULL THEN
-      SET cfg = STRUCT(current_table AS table_name, 'SNAPSHOT_MERGE' AS strategy, CAST(NULL AS STRING) AS time_col, CAST(NULL AS STRING) AS time_col_type, 'table_catalog' AS merge_keys, CAST(NULL AS STRING) AS partition_col_expr, 'table_catalog' AS cluster_cols, FALSE AS is_by_org, FALSE AS enable_end_time_check);
+      SET cfg = STRUCT(current_table AS table_name, 'SNAPSHOT_MERGE' AS strategy, CAST(NULL AS STRING) AS time_col, CAST(NULL AS STRING) AS time_col_type, 'table_catalog' AS merge_keys, CAST(NULL AS STRING) AS partition_col_expr, 'table_catalog' AS cluster_cols, FALSE AS is_by_org, FALSE AS enable_end_time_check, CAST(NULL AS STRING) AS end_time_col);
     END IF;
 
     SET dest_table_name = CONCAT(current_table, '_', region);
@@ -788,6 +789,47 @@ BEGIN
         CONTINUE;
       END IF;
 
+      -- ✨ FIXED: Handle INCREMENTAL_MERGE for BY_ORG tables - use _flush_batch with MERGE
+      IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
+        IF cfg.time_col IS NOT NULL THEN
+          EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE region='%s'",
+            cfg.time_col,dataset_name,dest_table_name,region) INTO last_sync_ts;
+          IF last_sync_ts IS NULL THEN SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY); END IF;
+
+          -- Build WHERE clause with eventual consistency logic for JOBS tables
+          IF cfg.enable_end_time_check THEN
+            SET time_filter = FORMAT("""
+              WHERE (
+                %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'
+                OR
+                %s > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d HOUR)
+                AND %s IS NOT NULL
+                AND %s > TIMESTAMP '%s'
+                AND %s <= TIMESTAMP '%s'
+              )
+            """,
+              cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
+              cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts),
+              cfg.time_col,job_timeout_hours,
+              cfg.end_time_col,cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
+              cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
+          ELSE
+            SET time_filter = FORMAT("WHERE %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
+              cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
+              cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
+          END IF;
+        ELSE
+          SET time_filter = 'WHERE TRUE';
+        END IF;
+
+        -- Build batch_union_sql for _flush_batch to handle with MERGE
+        SET batch_union_sql = FORMAT("SELECT %s FROM `region-%s`.INFORMATION_SCHEMA.%s %s",
+          typed_select,region,current_table,time_filter);
+        CALL unravel_share_us_new._flush_batch(dataset_name,dest_table_name,col_list,region,
+          batch_union_sql,CAST([] AS ARRAY<STRING>),cfg,current_run_ts,typed_select,lookback_days,control_ledger,time_filter,job_timeout_hours);
+        CONTINUE;
+      END IF;
+
       IF cfg.time_col IS NOT NULL THEN
         EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE region='%s'",
           cfg.time_col,dataset_name,dest_table_name,region) INTO last_sync_ts;
@@ -800,16 +842,16 @@ BEGIN
               %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'
               OR
               %s > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d HOUR)
-              AND end_time IS NOT NULL
-              AND end_time > TIMESTAMP '%s'
-              AND end_time <= TIMESTAMP '%s'
+              AND %s IS NOT NULL
+              AND %s > TIMESTAMP '%s'
+              AND %s <= TIMESTAMP '%s'
             )
           """,
             cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
             cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts),
             cfg.time_col,job_timeout_hours,
-            FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
-            FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
+            cfg.end_time_col,cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
+            cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
         ELSE
           SET time_filter = FORMAT("WHERE %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
             cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
@@ -867,16 +909,16 @@ BEGIN
                 %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'
                 OR
                 %s > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d HOUR)
-                AND end_time IS NOT NULL
-                AND end_time > TIMESTAMP '%s'
-                AND end_time <= TIMESTAMP '%s'
+                AND %s IS NOT NULL
+                AND %s > TIMESTAMP '%s'
+                AND %s <= TIMESTAMP '%s'
               )
             """,
               cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
               cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts),
               cfg.time_col,job_timeout_hours,
-              FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
-              FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
+              cfg.end_time_col,cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
+              cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
           ELSE
             SET time_filter = FORMAT("WHERE %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
               cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts),
@@ -921,12 +963,12 @@ CREATE OR REPLACE PROCEDURE unravel_share_us_new._flush_batch(
   dest_table_name STRING, 
   col_list STRING, 
   region STRING,
-  batch_union_sql STRING, 
-  batch_projects ARRAY<STRING>, 
-  cfg STRUCT<table_name STRING, strategy STRING, time_col STRING, time_col_type STRING, merge_keys STRING, partition_col_expr STRING, cluster_cols STRING, is_by_org BOOL, enable_end_time_check BOOL>,
-  current_run_ts TIMESTAMP, 
-  typed_select STRING, 
-  lookback_days INT64, 
+  batch_union_sql STRING,
+  batch_projects ARRAY<STRING>,
+  cfg STRUCT<table_name STRING, strategy STRING, time_col STRING, time_col_type STRING, merge_keys STRING, partition_col_expr STRING, cluster_cols STRING, is_by_org BOOL, enable_end_time_check BOOL, end_time_col STRING>,
+  current_run_ts TIMESTAMP,
+  typed_select STRING,
+  lookback_days INT64,
   control_ledger STRING,
   batch_time_filter STRING,
   job_timeout_hours INT64
@@ -949,13 +991,54 @@ BEGIN
   SET source_scope = IF(cfg.is_by_org, 'BY_ORG_MERGE', 'BATCH');
 
   -- ── Happy Path Output Dispatches ───────────────────────────────────────────
-  IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND') THEN
-    SET exec_sql = FORMAT("""
-      INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
-      SELECT batch_rows.*, CURRENT_TIMESTAMP() FROM (%s) AS batch_rows
-    """, dataset_name,dest_table_name,col_list,batch_union_sql);
-    
-    BEGIN 
+  IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND','INCREMENTAL_MERGE') THEN
+    -- ✨ MODIFIED: Use MERGE for INCREMENTAL_MERGE strategy with universal match key (job_id + project_id)
+    IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
+      -- Different match keys for JOBS vs JOBS_TIMELINE based on composite key
+      IF cfg.table_name = 'JOBS_TIMELINE' OR cfg.table_name = 'JOBS_TIMELINE_BY_ORGANIZATION' THEN
+        -- JOBS_TIMELINE: match on job_id + period_start + project_id
+        SET exec_sql = FORMAT("""
+          MERGE INTO `%s.%s` AS tgt
+          USING (%s) AS src
+          ON tgt.job_id = src.job_id
+             AND tgt.period_start = src.period_start
+             AND tgt.project_id = src.project_id
+          WHEN MATCHED THEN
+            UPDATE SET %s
+          WHEN NOT MATCHED THEN
+            INSERT (%s, ingestion_ts)
+            VALUES (%s, CURRENT_TIMESTAMP())
+        """,
+        dataset_name, dest_table_name, batch_union_sql,
+        (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
+        col_list,
+        (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+      ELSE
+        -- JOBS: match on job_id + project_id
+        SET exec_sql = FORMAT("""
+          MERGE INTO `%s.%s` AS tgt
+          USING (%s) AS src
+          ON tgt.job_id = src.job_id AND tgt.project_id = src.project_id
+          WHEN MATCHED THEN
+            UPDATE SET %s
+          WHEN NOT MATCHED THEN
+            INSERT (%s, ingestion_ts)
+            VALUES (%s, CURRENT_TIMESTAMP())
+        """,
+        dataset_name, dest_table_name, batch_union_sql,
+        (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
+        col_list,
+        (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+      END IF;
+    ELSE
+      -- Standard INSERT for INCREMENTAL_APPEND and AUDIT_APPEND
+      SET exec_sql = FORMAT("""
+        INSERT INTO `%s.%s` (%s, ingestion_ts)
+        SELECT batch_rows.*, CURRENT_TIMESTAMP() FROM (%s) AS batch_rows
+      """, dataset_name,dest_table_name,col_list,batch_union_sql);
+    END IF;
+
+    BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
       -- Log macro batch error via centralized module anyway
@@ -966,8 +1049,8 @@ BEGIN
       ELSE
         FOR idx IN (SELECT p FROM UNNEST(batch_projects) AS p) DO
           SET fallback_project = idx.p;
-          
-          IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND') AND cfg.time_col IS NOT NULL THEN
+
+          IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND','INCREMENTAL_MERGE') AND cfg.time_col IS NOT NULL THEN
             IF cfg.time_col_type = 'DATE' THEN
               EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE project='%s' AND region='%s'",
                 cfg.time_col,dataset_name,dest_table_name,fallback_project,region) INTO fallback_last_sync_date;
@@ -986,16 +1069,16 @@ BEGIN
                     %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'
                     OR
                     %s > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d HOUR)
-                    AND end_time IS NOT NULL
-                    AND end_time > TIMESTAMP '%s'
-                    AND end_time <= TIMESTAMP '%s'
+                    AND %s IS NOT NULL
+                    AND %s > TIMESTAMP '%s'
+                    AND %s <= TIMESTAMP '%s'
                   )
                 """,
                   cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',fallback_last_sync_ts),
                   cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts),
                   cfg.time_col,job_timeout_hours,
-                  FORMAT_TIMESTAMP('%F %H:%M:%E6S',fallback_last_sync_ts),
-                  FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
+                  cfg.end_time_col,cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',fallback_last_sync_ts),
+                  cfg.end_time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
               ELSE
                 SET fallback_time_clause = FORMAT("AND %s > TIMESTAMP '%s' AND %s <= TIMESTAMP '%s'",
                   cfg.time_col,FORMAT_TIMESTAMP('%F %H:%M:%E6S',fallback_last_sync_ts),
@@ -1006,13 +1089,51 @@ BEGIN
             SET fallback_time_clause = "AND TRUE";
           END IF;
 
-          SET fallback_sql = FORMAT("""
-            INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
-            SELECT %s, '%s' AS region, '%s' AS project, CURRENT_TIMESTAMP()
-            FROM `%s.region-%s`.INFORMATION_SCHEMA.%s 
-            WHERE TRUE %s
-          """, dataset_name, dest_table_name, col_list, typed_select, region, fallback_project, fallback_project, region, cfg.table_name, fallback_time_clause);
-          
+          -- ✨ MODIFIED: Use MERGE for INCREMENTAL_MERGE strategy with universal match key (job_id + project_id)
+          IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
+            -- Different match keys based on table type
+            IF cfg.table_name = 'JOBS_TIMELINE' OR cfg.table_name = 'JOBS_TIMELINE_BY_ORGANIZATION' THEN
+              -- Timeline tables: match on job_id + period_start + project_id
+              SET fallback_sql = FORMAT("""
+                MERGE INTO `%s.%s` AS tgt
+                USING (SELECT %s FROM `%s.region-%s`.INFORMATION_SCHEMA.%s WHERE TRUE %s) AS src
+                ON tgt.job_id = src.job_id
+                   AND tgt.period_start = src.period_start
+                   AND tgt.project_id = src.project_id
+                WHEN MATCHED THEN
+                  UPDATE SET %s
+                WHEN NOT MATCHED THEN
+                  INSERT (%s, ingestion_ts)
+                  VALUES (%s, CURRENT_TIMESTAMP())
+              """, dataset_name, dest_table_name, typed_select, fallback_project, region, cfg.table_name, fallback_time_clause,
+              (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
+              col_list,
+              (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+            ELSE
+              -- JOBS tables: match on job_id + project_id
+              SET fallback_sql = FORMAT("""
+                MERGE INTO `%s.%s` AS tgt
+                USING (SELECT %s FROM `%s.region-%s`.INFORMATION_SCHEMA.%s WHERE TRUE %s) AS src
+                ON tgt.job_id = src.job_id AND tgt.project_id = src.project_id
+                WHEN MATCHED THEN
+                  UPDATE SET %s
+                WHEN NOT MATCHED THEN
+                  INSERT (%s, ingestion_ts)
+                  VALUES (%s, CURRENT_TIMESTAMP())
+              """, dataset_name, dest_table_name, typed_select, fallback_project, region, cfg.table_name, fallback_time_clause,
+              (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
+              col_list,
+              (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+            END IF;
+          ELSE
+            SET fallback_sql = FORMAT("""
+              INSERT INTO `%s.%s` (%s, ingestion_ts)
+              SELECT %s, CURRENT_TIMESTAMP()
+              FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
+              WHERE TRUE %s
+            """, dataset_name, dest_table_name, col_list, typed_select, fallback_project, region, cfg.table_name, fallback_time_clause);
+          END IF;
+
           BEGIN
             EXECUTE IMMEDIATE fallback_sql;
           EXCEPTION WHEN ERROR THEN
