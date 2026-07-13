@@ -772,6 +772,9 @@ BEGIN
     CALL unravel_share_us_new._build_typed_select(dataset_name, dest_table_name, region, col_list, typed_select);
     IF typed_select IS NULL THEN SET typed_select = col_list; END IF;
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- BY_ORG tables branch
+    -- ═══════════════════════════════════════════════════════════════════════
     IF cfg.is_by_org THEN
       IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
         SET batch_union_sql = FORMAT("SELECT %s, '%s' AS region FROM `region-%s`.INFORMATION_SCHEMA.%s",
@@ -781,14 +784,12 @@ BEGIN
         CONTINUE;
       END IF;
 
-      -- ✨ FIXED: Handle INCREMENTAL_MERGE for BY_ORG tables - use _flush_batch with MERGE
       IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
         IF cfg.time_col IS NOT NULL THEN
           EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE region='%s'",
             cfg.time_col,dataset_name,dest_table_name,region) INTO last_sync_ts;
           IF last_sync_ts IS NULL THEN SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY); END IF;
 
-          -- Build WHERE clause with eventual consistency logic for JOBS tables
           IF cfg.enable_end_time_check THEN
             SET time_filter = FORMAT("""
               WHERE (
@@ -814,20 +815,20 @@ BEGIN
           SET time_filter = 'WHERE TRUE';
         END IF;
 
-        -- Build batch_union_sql for _flush_batch to handle with MERGE
-        SET batch_union_sql = FORMAT("SELECT %s FROM `region-%s`.INFORMATION_SCHEMA.%s %s",
-          typed_select,region,current_table,time_filter);
+        -- ✅ FIX 2: Added 'region' to BY_ORG INCREMENTAL_MERGE batch_union_sql
+        SET batch_union_sql = FORMAT("SELECT %s, '%s' AS region FROM `region-%s`.INFORMATION_SCHEMA.%s %s",
+          typed_select,region,region,current_table,time_filter);
         CALL unravel_share_us_new._flush_batch(dataset_name,dest_table_name,col_list,region,
           batch_union_sql,CAST([] AS ARRAY<STRING>),cfg,current_run_ts,typed_select,lookback_days,control_ledger,time_filter,job_timeout_hours);
         CONTINUE;
       END IF;
 
+      -- INCREMENTAL_APPEND for BY_ORG
       IF cfg.time_col IS NOT NULL THEN
         EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE region='%s'",
           cfg.time_col,dataset_name,dest_table_name,region) INTO last_sync_ts;
         IF last_sync_ts IS NULL THEN SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY); END IF;
 
-        -- ✨ MODIFIED: Build WHERE clause with eventual consistency logic for JOBS tables
         IF cfg.enable_end_time_check THEN
           SET time_filter = FORMAT("""
             WHERE (
@@ -870,6 +871,9 @@ BEGIN
       CONTINUE;
     END IF;
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- Non-BY_ORG tables: per-project batching loop
+    -- ═══════════════════════════════════════════════════════════════════════
     SET batch_count = 0;
     SET batch_union_sql = '';
     SET batch_projects = [];
@@ -882,7 +886,8 @@ BEGIN
         CONTINUE;
       END IF;
 
-      IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND') AND cfg.time_col IS NOT NULL THEN
+      -- ✅ FIX 1: Added 'INCREMENTAL_MERGE' to this condition
+      IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND','INCREMENTAL_MERGE') AND cfg.time_col IS NOT NULL THEN
         IF cfg.time_col_type = 'DATE' THEN
           EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE project='%s' AND region='%s'",
             cfg.time_col,dataset_name,dest_table_name,project_id,region) INTO last_sync_date;
@@ -894,7 +899,6 @@ BEGIN
             cfg.time_col,dataset_name,dest_table_name,project_id,region) INTO last_sync_ts;
           IF last_sync_ts IS NULL THEN SET last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY); END IF;
 
-          -- ✨ MODIFIED: Build WHERE clause with eventual consistency logic for JOBS tables
           IF cfg.enable_end_time_check THEN
             SET time_filter = FORMAT("""
               WHERE (
@@ -948,7 +952,10 @@ END;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 6. _flush_batch (Updated to accept job_timeout_hours parameter)
+-- 6. _flush_batch (FULLY FIXED)
+-- ✅ FIX A: Added region/project to INCREMENTAL_MERGE INSERT and UPDATE clauses
+-- ✅ FIX B: Added region/project to INCREMENTAL_APPEND/AUDIT_APPEND batch INSERT
+-- ✅ FIX C: Added region/project to INCREMENTAL_APPEND/AUDIT_APPEND fallback INSERT
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._flush_batch(
   dataset_name STRING,
@@ -973,6 +980,11 @@ BEGIN
   DECLARE insert_vals STRING;
   DECLARE source_scope STRING;
 
+  -- ✅ FIX A: Variables for INCREMENTAL_MERGE column mapping
+  DECLARE merge_update_set STRING;
+  DECLARE merge_insert_cols STRING;
+  DECLARE merge_insert_vals STRING;
+
   -- Fallback loop parameters
   DECLARE fallback_project STRING;
   DECLARE fallback_sql STRING;
@@ -984,11 +996,27 @@ BEGIN
 
   -- ── Happy Path Output Dispatches ───────────────────────────────────────────
   IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND','INCREMENTAL_MERGE') THEN
-    -- ✨ MODIFIED: Use MERGE for INCREMENTAL_MERGE strategy with universal match key (job_id + project_id)
+
     IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
+
+      -- ✅ FIX A: Build column mappings with region/project included
+      SET merge_update_set = (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ')
+        FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()';
+
+      IF cfg.is_by_org THEN
+        SET merge_update_set = merge_update_set || ', region = src.region';
+        SET merge_insert_cols = col_list || ', region, ingestion_ts';
+        SET merge_insert_vals = (SELECT STRING_AGG(FORMAT('src.%s', c), ', ')
+          FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', src.region, CURRENT_TIMESTAMP()';
+      ELSE
+        SET merge_update_set = merge_update_set || ', region = src.region, project = src.project';
+        SET merge_insert_cols = col_list || ', region, project, ingestion_ts';
+        SET merge_insert_vals = (SELECT STRING_AGG(FORMAT('src.%s', c), ', ')
+          FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', src.region, src.project, CURRENT_TIMESTAMP()';
+      END IF;
+
       -- Different match keys for JOBS vs JOBS_TIMELINE based on composite key
       IF cfg.table_name = 'JOBS_TIMELINE' OR cfg.table_name = 'JOBS_TIMELINE_BY_ORGANIZATION' THEN
-        -- JOBS_TIMELINE: match on job_id + period_start + project_id
         SET exec_sql = FORMAT("""
           MERGE INTO `%s.%s` AS tgt
           USING (%s) AS src
@@ -998,15 +1026,14 @@ BEGIN
           WHEN MATCHED THEN
             UPDATE SET %s
           WHEN NOT MATCHED THEN
-            INSERT (%s, ingestion_ts)
-            VALUES (%s, CURRENT_TIMESTAMP())
+            INSERT (%s)
+            VALUES (%s)
         """,
         dataset_name, dest_table_name, batch_union_sql,
-        (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
-        col_list,
-        (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+        merge_update_set,
+        merge_insert_cols,
+        merge_insert_vals);
       ELSE
-        -- JOBS: match on job_id + project_id
         SET exec_sql = FORMAT("""
           MERGE INTO `%s.%s` AS tgt
           USING (%s) AS src
@@ -1014,26 +1041,28 @@ BEGIN
           WHEN MATCHED THEN
             UPDATE SET %s
           WHEN NOT MATCHED THEN
-            INSERT (%s, ingestion_ts)
-            VALUES (%s, CURRENT_TIMESTAMP())
+            INSERT (%s)
+            VALUES (%s)
         """,
         dataset_name, dest_table_name, batch_union_sql,
-        (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
-        col_list,
-        (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+        merge_update_set,
+        merge_insert_cols,
+        merge_insert_vals);
       END IF;
+
     ELSE
-      -- Standard INSERT for INCREMENTAL_APPEND and AUDIT_APPEND
+      -- ✅ FIX B: Standard INSERT for INCREMENTAL_APPEND and AUDIT_APPEND
+      -- batch_union_sql includes region and project columns via SELECT ... '%s' AS region, '%s' AS project
+      -- so batch_rows.* expands to col_list + region + project, matching the INSERT target
       SET exec_sql = FORMAT("""
-        INSERT INTO `%s.%s` (%s, ingestion_ts)
+        INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
         SELECT batch_rows.*, CURRENT_TIMESTAMP() FROM (%s) AS batch_rows
-      """, dataset_name,dest_table_name,col_list,batch_union_sql);
+      """, dataset_name, dest_table_name, col_list, batch_union_sql);
     END IF;
 
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
-      -- Log macro batch error via centralized module anyway
       CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, source_scope, 'Macro batch append failed. Unnesting loop: '||@@error.message, exec_sql);
 
       IF cfg.is_by_org THEN
@@ -1054,7 +1083,6 @@ BEGIN
                 cfg.time_col,dataset_name,dest_table_name,fallback_project,region) INTO fallback_last_sync_ts;
               IF fallback_last_sync_ts IS NULL THEN SET fallback_last_sync_ts = TIMESTAMP_SUB(current_run_ts, INTERVAL lookback_days DAY); END IF;
 
-              -- ✨ MODIFIED: Build WHERE clause with eventual consistency logic for JOBS tables
               IF cfg.enable_end_time_check THEN
                 SET fallback_time_clause = FORMAT("""
                   AND (
@@ -1081,55 +1109,54 @@ BEGIN
             SET fallback_time_clause = "AND TRUE";
           END IF;
 
-          -- ✨ MODIFIED: Use MERGE for INCREMENTAL_MERGE strategy with universal match key (job_id + project_id)
+          -- ✅ FIX A: Fallback MERGE uses merge_update_set/merge_insert_cols/merge_insert_vals
           IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
-            -- Different match keys based on table type
             IF cfg.table_name = 'JOBS_TIMELINE' OR cfg.table_name = 'JOBS_TIMELINE_BY_ORGANIZATION' THEN
-              -- Timeline tables: match on job_id + period_start + project_id
               SET fallback_sql = FORMAT("""
                 MERGE INTO `%s.%s` AS tgt
-                USING (SELECT %s FROM `%s.region-%s`.INFORMATION_SCHEMA.%s WHERE TRUE %s) AS src
+                USING (SELECT %s, '%s' AS region, '%s' AS project FROM `%s.region-%s`.INFORMATION_SCHEMA.%s WHERE TRUE %s) AS src
                 ON tgt.job_id = src.job_id
                    AND tgt.period_start = src.period_start
                    AND tgt.project_id = src.project_id
                 WHEN MATCHED THEN
                   UPDATE SET %s
                 WHEN NOT MATCHED THEN
-                  INSERT (%s, ingestion_ts)
-                  VALUES (%s, CURRENT_TIMESTAMP())
-              """, dataset_name, dest_table_name, typed_select, fallback_project, region, cfg.table_name, fallback_time_clause,
-              (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
-              col_list,
-              (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+                  INSERT (%s)
+                  VALUES (%s)
+              """, dataset_name, dest_table_name, typed_select, region, fallback_project, fallback_project, region, cfg.table_name, fallback_time_clause,
+              merge_update_set,
+              merge_insert_cols,
+              merge_insert_vals);
             ELSE
-              -- JOBS tables: match on job_id + project_id
               SET fallback_sql = FORMAT("""
                 MERGE INTO `%s.%s` AS tgt
-                USING (SELECT %s FROM `%s.region-%s`.INFORMATION_SCHEMA.%s WHERE TRUE %s) AS src
+                USING (SELECT %s, '%s' AS region, '%s' AS project FROM `%s.region-%s`.INFORMATION_SCHEMA.%s WHERE TRUE %s) AS src
                 ON tgt.job_id = src.job_id AND tgt.project_id = src.project_id
                 WHEN MATCHED THEN
                   UPDATE SET %s
                 WHEN NOT MATCHED THEN
-                  INSERT (%s, ingestion_ts)
-                  VALUES (%s, CURRENT_TIMESTAMP())
-              """, dataset_name, dest_table_name, typed_select, fallback_project, region, cfg.table_name, fallback_time_clause,
-              (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()',
-              col_list,
-              (SELECT STRING_AGG(FORMAT('src.%s', c), ', ') FROM UNNEST(SPLIT(col_list, ', ')) AS c));
+                  INSERT (%s)
+                  VALUES (%s)
+              """, dataset_name, dest_table_name, typed_select, region, fallback_project, fallback_project, region, cfg.table_name, fallback_time_clause,
+              merge_update_set,
+              merge_insert_cols,
+              merge_insert_vals);
             END IF;
           ELSE
+            -- ✅ FIX C: Fallback INSERT includes region and project
             SET fallback_sql = FORMAT("""
-              INSERT INTO `%s.%s` (%s, ingestion_ts)
-              SELECT %s, CURRENT_TIMESTAMP()
+              INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
+              SELECT %s, '%s' AS region, '%s' AS project, CURRENT_TIMESTAMP()
               FROM `%s.region-%s`.INFORMATION_SCHEMA.%s
               WHERE TRUE %s
-            """, dataset_name, dest_table_name, col_list, typed_select, fallback_project, region, cfg.table_name, fallback_time_clause);
+            """, dataset_name, dest_table_name, col_list, typed_select,
+              region, fallback_project,
+              fallback_project, region, cfg.table_name, fallback_time_clause);
           END IF;
-          
+
           BEGIN
             EXECUTE IMMEDIATE fallback_sql;
           EXCEPTION WHEN ERROR THEN
-            -- Route checks and writes securely through modularized logic paths
             CALL unravel_share_us_new._update_project_ledger(control_ledger, @@error.message, fallback_project, cfg.table_name);
             CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, fallback_project, 'Isolated fallback copy failed: '||@@error.message, fallback_sql);
           END;
@@ -1151,8 +1178,8 @@ BEGIN
       WHEN NOT MATCHED BY TARGET THEN INSERT (%s) VALUES (%s)
       WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' THEN DELETE
     """, dataset_name,dest_table_name,batch_union_sql,on_clause,set_clause,insert_cols,insert_vals,region);
-    
-    BEGIN 
+
+    BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
       CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, source_scope, 'BY_ORG snapshot merge failed: '||@@error.message, exec_sql);
@@ -1172,28 +1199,26 @@ BEGIN
       WHEN NOT MATCHED BY TARGET THEN INSERT (%s) VALUES (%s)
       WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' AND tgt.project IN UNNEST(@batch_projects) THEN DELETE
     """, dataset_name,dest_table_name,batch_union_sql,on_clause,set_clause,insert_cols,insert_vals,region);
-    
-    BEGIN 
+
+    BEGIN
       EXECUTE IMMEDIATE exec_sql USING batch_projects AS batch_projects;
     EXCEPTION WHEN ERROR THEN
-      -- Log macro batch error via centralized module anyway
       CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, source_scope, 'Batch merge identity conflict hit. Initiating loops fallback: '||@@error.message, exec_sql);
 
       FOR idx IN (SELECT p FROM UNNEST(batch_projects) AS p) DO
         SET fallback_project = idx.p;
-        
+
         SET fallback_sql = FORMAT("""
-          MERGE `%s.%s` AS tgt 
+          MERGE `%s.%s` AS tgt
           USING (SELECT %s, '%s' AS region, '%s' AS project FROM `%s.region-%s`.INFORMATION_SCHEMA.%s) AS src ON %s
           WHEN MATCHED THEN UPDATE SET %s
           WHEN NOT MATCHED BY TARGET THEN INSERT (%s) VALUES (%s)
           WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' AND tgt.project = '%s' THEN DELETE
         """, dataset_name, dest_table_name, typed_select, region, fallback_project, fallback_project, region, cfg.table_name, on_clause, set_clause, insert_cols, insert_vals, region, fallback_project);
-        
+
         BEGIN
           EXECUTE IMMEDIATE fallback_sql;
         EXCEPTION WHEN ERROR THEN
-          -- Route checks and writes securely through modularized logic paths
           CALL unravel_share_us_new._update_project_ledger(control_ledger, @@error.message, fallback_project, cfg.table_name);
           CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, fallback_project, 'Isolated fallback merge collapsed: '||@@error.message, fallback_sql);
         END;
