@@ -19,14 +19,6 @@ PARTITION BY DATE(logged_at)
 CLUSTER BY project_id;
 
 
-ALTER TABLE `unravel_share_us_projects_list.projects_table`
-ADD COLUMN IF NOT EXISTS access_allowed BOOL,
-ADD COLUMN IF NOT EXISTS reason STRING,
-ADD COLUMN IF NOT EXISTS table_name STRING;
-
-TRUNCATE TABLE `unravel_share_us_projects_list.projects_table`;
-
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- UTILITY A: _log_error (Modularized Diagnostic Logger)
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -48,11 +40,11 @@ CREATE OR REPLACE PROCEDURE unravel_share_us_new._update_project_ledger(
 BEGIN
   DECLARE upper_error STRING DEFAULT UPPER(raw_error);
   DECLARE update_allowed BOOL DEFAULT FALSE;
-  
+
   -- Conditional Check Constraint Rule Core Isolation Unit
   SET update_allowed = (
-    upper_error LIKE '%ACCESS DENIED%' 
-    OR upper_error LIKE '%VPC%' 
+    upper_error LIKE '%ACCESS DENIED%'
+    OR upper_error LIKE '%VPC%'
     OR upper_error LIKE '%NOT FOUND%'
   );
 
@@ -97,11 +89,11 @@ BEGIN
   IF NOT table_exists THEN
     SET exec_sql = FORMAT("""
       CREATE TABLE IF NOT EXISTS `%s.%s` (
-        project_id STRING NOT NULL, 
+        project_id STRING NOT NULL,
         table_name STRING NOT NULL,
         access_allowed BOOL DEFAULT TRUE,
         reason STRING,
-        first_seen TIMESTAMP, 
+        first_seen TIMESTAMP,
         last_seen TIMESTAMP
       ) CLUSTER BY table_name, project_id
     """, dataset_name, projects_table_name);
@@ -110,20 +102,20 @@ BEGIN
 
     SET exec_sql = FORMAT("""
       INSERT INTO `%s.%s` (project_id, table_name, access_allowed, reason, first_seen, last_seen)
-      SELECT 
-        IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', 'ORGANIZATION_ROOT', project.id) AS project_id, 
-        current_target_table, 
-        TRUE, 
-        CAST(NULL AS STRING), 
-        IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', CAST(NULL AS TIMESTAMP), MIN(export_time)) AS first_seen, 
+      SELECT
+        IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', 'ORGANIZATION_ROOT', project.id) AS project_id,
+        current_target_table,
+        TRUE,
+        CAST(NULL AS STRING),
+        IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', CAST(NULL AS TIMESTAMP), MIN(export_time)) AS first_seen,
         IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', CAST(NULL AS TIMESTAMP), MAX(export_time)) AS last_seen
       FROM `%s.%s.%s`
       CROSS JOIN UNNEST(@table_param) AS current_target_table
-      WHERE service.id IN ('650B-3C82-34DB','16B8-3DDA-9F10','DCC9-8DB9-673F','24E6-581D-38E5') 
+      WHERE service.id IN ('650B-3C82-34DB','16B8-3DDA-9F10','DCC9-8DB9-673F','24E6-581D-38E5')
         AND project.id IS NOT NULL
       GROUP BY 1, current_target_table
     """, dataset_name, projects_table_name, billing_export_project, billing_dataset, billing_table);
-    
+
     BEGIN EXECUTE IMMEDIATE exec_sql USING monitored_tables AS table_param;
     EXCEPTION WHEN ERROR THEN RAISE USING MESSAGE = "ERROR: Failed to populate initial projects ledger – " || @@error.message; END;
   ELSE
@@ -133,10 +125,10 @@ BEGIN
     SET exec_sql = FORMAT("""
       MERGE `%s.%s` AS tgt
       USING (
-        SELECT 
-          IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', 'ORGANIZATION_ROOT', project.id) AS project_id, 
-          current_target_table AS table_name, 
-          IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', CAST(NULL AS TIMESTAMP), MIN(export_time)) AS first_seen, 
+        SELECT
+          IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', 'ORGANIZATION_ROOT', project.id) AS project_id,
+          current_target_table AS table_name,
+          IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', CAST(NULL AS TIMESTAMP), MIN(export_time)) AS first_seen,
           IF(current_target_table LIKE '%%_BY_ORGANIZATION%%', CAST(NULL AS TIMESTAMP), MAX(export_time)) AS last_seen
         FROM `%s.%s.%s`
         CROSS JOIN UNNEST(@table_param) AS current_target_table
@@ -146,14 +138,14 @@ BEGIN
           AND project.id IS NOT NULL
         GROUP BY 1, 2
       ) AS src ON tgt.project_id = src.project_id AND tgt.table_name = src.table_name
-      WHEN MATCHED AND src.last_seen > tgt.last_seen AND tgt.project_id != 'ORGANIZATION_ROOT' THEN 
+      WHEN MATCHED AND src.last_seen > tgt.last_seen AND tgt.project_id != 'ORGANIZATION_ROOT' THEN
         UPDATE SET last_seen = src.last_seen
-      WHEN NOT MATCHED THEN 
-        INSERT (project_id, table_name, access_allowed, reason, first_seen, last_seen) 
+      WHEN NOT MATCHED THEN
+        INSERT (project_id, table_name, access_allowed, reason, first_seen, last_seen)
         VALUES (src.project_id, src.table_name, TRUE, CAST(NULL AS STRING), src.first_seen, src.last_seen)
     """, dataset_name, projects_table_name, billing_export_project, billing_dataset, billing_table,
       FORMAT_TIMESTAMP('%F',last_export_ts), FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_export_ts), FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
-    
+
     BEGIN EXECUTE IMMEDIATE exec_sql USING monitored_tables AS table_param;
     EXCEPTION WHEN ERROR THEN RAISE USING MESSAGE = "ERROR: Failed to merge incremental project IDs into ledger – " || @@error.message; END;
   END IF;
@@ -164,11 +156,11 @@ END;
 -- 3. export_billing_data_incremental (Utilizes customized billing selector logic)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_billing_data_incremental(
-  dataset_name STRING, 
-  look_back_days INT64, 
+  dataset_name STRING,
+  look_back_days INT64,
   billing_export_project STRING,
-  billing_dataset STRING, 
-  billing_table STRING, 
+  billing_dataset STRING,
+  billing_table STRING,
   retention_days INT64,
   region STRING
 )
@@ -202,12 +194,12 @@ BEGIN
     FROM `%s.%s`.INFORMATION_SCHEMA.COLUMNS c
     WHERE c.table_schema='%s' AND c.table_name='%s' AND c.column_name != 'ingestion_ts'
   """, @@project_id, regional_schema_path, dataset_name, dest_table);
-  
+
   BEGIN EXECUTE IMMEDIATE exec_sql INTO billing_col_list;
   EXCEPTION WHEN ERROR THEN
     CALL unravel_share_us_new._log_error(current_run_ts, dest_table, billing_export_project, 'Billing col_list failed: '||@@error.message, exec_sql); RETURN;
   END;
-  
+
   IF billing_col_list IS NULL THEN
     CALL unravel_share_us_new._log_error(current_run_ts, dest_table, billing_export_project, 'billing_col_list resolves to NULL', NULL); RETURN;
   END IF;
@@ -216,8 +208,8 @@ BEGIN
     dataset_name, dest_table, region, billing_col_list, typed_billing_select
   );
 
-  IF typed_billing_select IS NULL OR typed_billing_select = '' THEN 
-    SET typed_billing_select = billing_col_list; 
+  IF typed_billing_select IS NULL OR typed_billing_select = '' THEN
+    SET typed_billing_select = billing_col_list;
   END IF;
 
   EXECUTE IMMEDIATE FORMAT("SELECT MAX(export_time) FROM `%s.%s`",dataset_name,dest_table) INTO last_sync_ts;
@@ -231,7 +223,7 @@ BEGIN
   """, dataset_name, dest_table, billing_col_list, typed_billing_select,
     billing_export_project, billing_dataset, billing_table,
     FORMAT_TIMESTAMP('%F %H:%M:%E6S',last_sync_ts), FORMAT_TIMESTAMP('%F %H:%M:%E6S',current_run_ts));
-    
+
   BEGIN EXECUTE IMMEDIATE exec_sql;
   EXCEPTION WHEN ERROR THEN
     CALL unravel_share_us_new._log_error(current_run_ts, dest_table, billing_export_project, 'Billing incremental insert failed: '||@@error.message, exec_sql);
@@ -241,6 +233,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 4. _build_typed_select
+-- ✅ MODIFIED: Added 'is_deleted','deleted_time' to column exclusion list
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._build_typed_select(
   dataset_name     STRING,
@@ -272,7 +265,7 @@ BEGIN
       WHERE cfp.table_catalog = '%s'
         AND cfp.table_schema  = '%s'
         AND cfp.table_name    = '%s'
-        AND cfp.column_name NOT IN ('region', 'project', 'ingestion_ts')
+        AND cfp.column_name NOT IN ('region', 'project', 'ingestion_ts', 'is_deleted', 'deleted_time')
         AND cfp.column_name IN UNNEST(%s)
     )
     SELECT
@@ -445,7 +438,7 @@ BEGIN
       WHERE cfp.table_catalog = '%s'
         AND cfp.table_schema  = '%s'
         AND cfp.table_name    = '%s'
-        AND cfp.column_name NOT IN ('region', 'ingestion_ts') 
+        AND cfp.column_name NOT IN ('region', 'ingestion_ts')
         AND cfp.column_name IN UNNEST(%s)
     )
     SELECT
@@ -586,9 +579,10 @@ END;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 5. export_metadata_incremental_US 
--- ✨ MODIFIED: Added job_timeout_hours parameter & enable_end_time_check config flag
---    Captures state changes for jobs that were RUNNING but completed in current sync
+-- 5. export_metadata_incremental_US
+-- ✅ MODIFIED:
+--    - DDL adds is_deleted BOOL and deleted_time TIMESTAMP columns
+--    - col_list excludes is_deleted, deleted_time
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US(
   dataset_name   STRING,
@@ -622,16 +616,17 @@ BEGIN
   DECLARE batch_union_sql   STRING;
   DECLARE batch_projects    ARRAY<STRING>;
   DECLARE typed_select      STRING;
-  
+
   -- Fallback loop parameters
   DECLARE ddl_success       BOOL;
   DECLARE ddl_project_idx   INT64;
   DECLARE total_ddl_projects INT64;
   DECLARE test_project      STRING;
 
-  -- ✨ MODIFIED: Using strategy to determine MERGE vs INSERT
-  -- INCREMENTAL_MERGE: uses MERGE to deduplicate (for JOBS and JOBS_TIMELINE)
-  -- INCREMENTAL_APPEND: uses INSERT (for other timelines)
+  -- ✅ Soft-delete retention: hard-delete rows soft-deleted longer than this many days
+  DECLARE soft_delete_retention_days INT64 DEFAULT 90;
+  DECLARE cleanup_sql       STRING;
+
   SET config = [
     STRUCT('JOBS' AS table_name,'INCREMENTAL_MERGE' AS strategy,'creation_time' AS time_col,'TIMESTAMP' AS time_col_type,CAST(NULL AS STRING) AS merge_keys,'DATE(creation_time)' AS partition_col_expr,'project_id, user_email' AS cluster_cols,FALSE AS is_by_org,TRUE AS enable_end_time_check,'end_time' AS end_time_col),
     STRUCT('JOBS_TIMELINE','INCREMENTAL_MERGE','job_creation_time','TIMESTAMP',CAST(NULL AS STRING),'DATE(job_creation_time)','project_id, user_email',FALSE,TRUE,'job_end_time'),
@@ -689,15 +684,27 @@ BEGIN
     SET baseline_project = NULL;
 
     IF cfg.is_by_org THEN
-      SET exec_sql = FORMAT("""
-        CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
-        SELECT *, CAST(NULL AS STRING) AS region, CURRENT_TIMESTAMP() AS ingestion_ts
-        FROM `region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
-      """, dataset_name,dest_table_name,partition_clause,cluster_clause,
-        IF(partition_clause!='',FORMAT('OPTIONS (partition_expiration_days=%d)',retention_days),''),
-        region,current_table);
-        
-      BEGIN 
+      -- ✅ FIX: Only add is_deleted/deleted_time for SNAPSHOT_MERGE strategy
+      IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
+        SET exec_sql = FORMAT("""
+          CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
+          SELECT *, CAST(NULL AS STRING) AS region, CURRENT_TIMESTAMP() AS ingestion_ts,
+                 FALSE AS is_deleted, CAST(NULL AS TIMESTAMP) AS deleted_time
+          FROM `region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+        """, dataset_name,dest_table_name,partition_clause,cluster_clause,
+          IF(partition_clause!='',FORMAT('OPTIONS (partition_expiration_days=%d)',retention_days),''),
+          region,current_table);
+      ELSE
+        SET exec_sql = FORMAT("""
+          CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
+          SELECT *, CAST(NULL AS STRING) AS region, CURRENT_TIMESTAMP() AS ingestion_ts
+          FROM `region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+        """, dataset_name,dest_table_name,partition_clause,cluster_clause,
+          IF(partition_clause!='',FORMAT('OPTIONS (partition_expiration_days=%d)',retention_days),''),
+          region,current_table);
+      END IF;
+
+      BEGIN
         EXECUTE IMMEDIATE exec_sql;
         SET ddl_success = TRUE;
         SET baseline_project = 'ORGANIZATION_ROOT';
@@ -710,20 +717,31 @@ BEGIN
         SET test_project = project_ids[OFFSET(ddl_project_idx)];
         SET ddl_project_idx = ddl_project_idx + 1;
 
-        SET exec_sql = FORMAT("""
-          CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
-          SELECT *, CAST(NULL AS STRING) AS region, CAST(NULL AS STRING) AS project, CURRENT_TIMESTAMP() AS ingestion_ts
-          FROM `%s.region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
-        """, dataset_name, dest_table_name, partition_clause, cluster_clause,
-          IF(partition_clause!='', FORMAT('OPTIONS (partition_expiration_days=%d)', retention_days), ''),
-          test_project, region, current_table);
+        -- ✅ FIX: Only add is_deleted/deleted_time for SNAPSHOT_MERGE strategy
+        IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
+          SET exec_sql = FORMAT("""
+            CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
+            SELECT *, CAST(NULL AS STRING) AS region, CAST(NULL AS STRING) AS project, CURRENT_TIMESTAMP() AS ingestion_ts,
+                   FALSE AS is_deleted, CAST(NULL AS TIMESTAMP) AS deleted_time
+            FROM `%s.region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+          """, dataset_name, dest_table_name, partition_clause, cluster_clause,
+            IF(partition_clause!='', FORMAT('OPTIONS (partition_expiration_days=%d)', retention_days), ''),
+            test_project, region, current_table);
+        ELSE
+          SET exec_sql = FORMAT("""
+            CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
+            SELECT *, CAST(NULL AS STRING) AS region, CAST(NULL AS STRING) AS project, CURRENT_TIMESTAMP() AS ingestion_ts
+            FROM `%s.region-%s`.INFORMATION_SCHEMA.%s LIMIT 0
+          """, dataset_name, dest_table_name, partition_clause, cluster_clause,
+            IF(partition_clause!='', FORMAT('OPTIONS (partition_expiration_days=%d)', retention_days), ''),
+            test_project, region, current_table);
+        END IF;
 
         BEGIN
           EXECUTE IMMEDIATE exec_sql;
           SET ddl_success = TRUE;
-          SET baseline_project = test_project; 
+          SET baseline_project = test_project;
         EXCEPTION WHEN ERROR THEN
-          -- Route error evaluations through specialized utility components
           CALL unravel_share_us_new._update_project_ledger(control_ledger, @@error.message, test_project, current_table);
           CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, test_project, 'DDL trial block exception intercept: '||@@error.message, exec_sql);
         END;
@@ -744,18 +762,19 @@ BEGIN
         dataset_name,temp_table_name,baseline_project,region,current_table);
     END IF;
 
-    BEGIN 
+    BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
       CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, baseline_project, 'col_list matrix dynamic table build collapsed: '||@@error.message, exec_sql);
       CONTINUE;
     END;
 
+    -- ✅ MODIFIED: col_list now also excludes is_deleted and deleted_time
     SET exec_sql = FORMAT("""
       SELECT STRING_AGG(c.column_name, ', ' ORDER BY c.ordinal_position)
       FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS c
       WHERE c.table_catalog='%s' AND c.table_schema='%s' AND c.table_name='%s'
-        AND c.column_name NOT IN ('region','project','ingestion_ts')
+        AND c.column_name NOT IN ('region','project','ingestion_ts','is_deleted','deleted_time')
         AND c.column_name IN (
           SELECT column_name FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS
           WHERE table_catalog='%s' AND table_schema='%s' AND table_name='%s'
@@ -789,6 +808,20 @@ BEGIN
           typed_select,region,region,current_table);
         CALL unravel_share_us_new._flush_batch(dataset_name,dest_table_name,col_list,region,
           batch_union_sql,CAST([] AS ARRAY<STRING>),cfg,current_run_ts,typed_select,lookback_days,control_ledger,'WHERE TRUE',job_timeout_hours);
+
+        -- ✅ Hard-delete: runs ONCE for BY_ORG SNAPSHOT_MERGE
+        SET cleanup_sql = FORMAT("""
+          DELETE FROM `%s.%s`
+          WHERE is_deleted = TRUE
+            AND deleted_time < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
+            AND region = '%s'
+        """, dataset_name, dest_table_name, soft_delete_retention_days, region);
+        BEGIN
+          EXECUTE IMMEDIATE cleanup_sql;
+        EXCEPTION WHEN ERROR THEN
+          CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, 'CLEANUP', 'BY_ORG soft-delete retention cleanup failed: '||@@error.message, cleanup_sql);
+        END;
+
         CONTINUE;
       END IF;
 
@@ -823,7 +856,6 @@ BEGIN
           SET time_filter = 'WHERE TRUE';
         END IF;
 
-        -- ✅ FIX 2: Added 'region' to BY_ORG INCREMENTAL_MERGE batch_union_sql
         SET batch_union_sql = FORMAT("SELECT %s, '%s' AS region FROM `region-%s`.INFORMATION_SCHEMA.%s %s",
           typed_select,region,region,current_table,time_filter);
         CALL unravel_share_us_new._flush_batch(dataset_name,dest_table_name,col_list,region,
@@ -894,7 +926,6 @@ BEGIN
         CONTINUE;
       END IF;
 
-      -- ✅ FIX 1: Added 'INCREMENTAL_MERGE' to this condition
       IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND','INCREMENTAL_MERGE') AND cfg.time_col IS NOT NULL THEN
         IF cfg.time_col_type = 'DATE' THEN
           EXECUTE IMMEDIATE FORMAT("SELECT MAX(%s) FROM `%s.%s` WHERE project='%s' AND region='%s'",
@@ -955,15 +986,34 @@ BEGIN
         batch_union_sql,batch_projects,cfg,current_run_ts,typed_select,lookback_days,control_ledger,time_filter,job_timeout_hours);
     END IF;
 
+    -- ✅ Hard-delete: runs ONCE per table after all batches/branches complete
+    IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
+      SET cleanup_sql = FORMAT("""
+        DELETE FROM `%s.%s`
+        WHERE is_deleted = TRUE
+          AND deleted_time < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL %d DAY)
+          AND region = '%s'
+      """, dataset_name, dest_table_name, soft_delete_retention_days, region);
+      BEGIN
+        EXECUTE IMMEDIATE cleanup_sql;
+      EXCEPTION WHEN ERROR THEN
+        CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, 'CLEANUP', 'Soft-delete retention cleanup failed: '||@@error.message, cleanup_sql);
+      END;
+    END IF;
+
   END FOR;
 END;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 6. _flush_batch (FULLY FIXED)
--- ✅ FIX A: Added region/project to INCREMENTAL_MERGE INSERT and UPDATE clauses
--- ✅ FIX B: Added region/project to INCREMENTAL_APPEND/AUDIT_APPEND batch INSERT
--- ✅ FIX C: Added region/project to INCREMENTAL_APPEND/AUDIT_APPEND fallback INSERT
+-- 6. _flush_batch
+-- ✅ MODIFIED (Soft-Delete):
+--    - WHEN MATCHED → also resets is_deleted=FALSE, deleted_time=NULL (resurrect)
+--    - WHEN NOT MATCHED BY TARGET → inserts with is_deleted=FALSE, deleted_time=NULL
+--    - WHEN NOT MATCHED BY SOURCE → UPDATE SET is_deleted=TRUE, deleted_time=IFNULL(...)
+--      instead of DELETE
+--    - After MERGE: hard-delete rows where is_deleted=TRUE AND deleted_time older
+--      than soft_delete_retention_days (default 90)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._flush_batch(
   dataset_name STRING,
@@ -988,7 +1038,6 @@ BEGIN
   DECLARE insert_vals STRING;
   DECLARE source_scope STRING;
 
-  -- ✅ FIX A: Variables for INCREMENTAL_MERGE column mapping
   DECLARE merge_update_set STRING;
   DECLARE merge_insert_cols STRING;
   DECLARE merge_insert_vals STRING;
@@ -1007,7 +1056,6 @@ BEGIN
 
     IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
 
-      -- ✅ FIX A: Build column mappings with region/project included
       SET merge_update_set = (SELECT STRING_AGG(FORMAT('%s = src.%s', c, c), ', ')
         FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', ingestion_ts = CURRENT_TIMESTAMP()';
 
@@ -1023,7 +1071,6 @@ BEGIN
           FROM UNNEST(SPLIT(col_list, ', ')) AS c) || ', src.region, src.project, CURRENT_TIMESTAMP()';
       END IF;
 
-      -- Different match keys for JOBS vs JOBS_TIMELINE based on composite key
       IF cfg.table_name = 'JOBS_TIMELINE' OR cfg.table_name = 'JOBS_TIMELINE_BY_ORGANIZATION' THEN
         SET exec_sql = FORMAT("""
           MERGE INTO `%s.%s` AS tgt
@@ -1059,9 +1106,6 @@ BEGIN
       END IF;
 
     ELSE
-      -- ✅ FIX B: Standard INSERT for INCREMENTAL_APPEND and AUDIT_APPEND
-      -- batch_union_sql includes region and project columns via SELECT ... '%s' AS region, '%s' AS project
-      -- so batch_rows.* expands to col_list + region + project, matching the INSERT target
       SET exec_sql = FORMAT("""
         INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
         SELECT batch_rows.*, CURRENT_TIMESTAMP() FROM (%s) AS batch_rows
@@ -1117,7 +1161,6 @@ BEGIN
             SET fallback_time_clause = "AND TRUE";
           END IF;
 
-          -- ✅ FIX A: Fallback MERGE uses merge_update_set/merge_insert_cols/merge_insert_vals
           IF cfg.strategy = 'INCREMENTAL_MERGE' THEN
             IF cfg.table_name = 'JOBS_TIMELINE' OR cfg.table_name = 'JOBS_TIMELINE_BY_ORGANIZATION' THEN
               SET fallback_sql = FORMAT("""
@@ -1151,7 +1194,6 @@ BEGIN
               merge_insert_vals);
             END IF;
           ELSE
-            -- ✅ FIX C: Fallback INSERT includes region and project
             SET fallback_sql = FORMAT("""
               INSERT INTO `%s.%s` (%s, region, project, ingestion_ts)
               SELECT %s, '%s' AS region, '%s' AS project, CURRENT_TIMESTAMP()
@@ -1172,19 +1214,24 @@ BEGIN
       END IF;
     END;
 
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- SNAPSHOT_MERGE: BY_ORG
+  -- ✅ MODIFIED: Soft-delete instead of hard DELETE
+  -- ═══════════════════════════════════════════════════════════════════════════
   ELSEIF cfg.strategy = 'SNAPSHOT_MERGE' AND cfg.is_by_org THEN
     SET on_clause = 'tgt.region = src.region';
     SET on_clause = (SELECT on_clause||' AND '||STRING_AGG(FORMAT('tgt.%s = src.%s',k,k),' AND ') FROM UNNEST(SPLIT(cfg.merge_keys,', ')) AS k);
     SET set_clause = (SELECT STRING_AGG(FORMAT('%s = src.%s',c,c),', ') FROM UNNEST(SPLIT(col_list,', ')) AS c);
-    SET set_clause = set_clause || ', ingestion_ts = CURRENT_TIMESTAMP()';
-    SET insert_cols = col_list || ', region, ingestion_ts';
+    SET set_clause = set_clause || ', ingestion_ts = CURRENT_TIMESTAMP(), is_deleted = FALSE, deleted_time = CAST(NULL AS TIMESTAMP)';
+    SET insert_cols = col_list || ', region, ingestion_ts, is_deleted, deleted_time';
     SET insert_vals = (SELECT STRING_AGG(FORMAT('src.%s',c),', ') FROM UNNEST(SPLIT(col_list,', ')) AS c);
-    SET insert_vals = insert_vals || ', src.region, CURRENT_TIMESTAMP()';
+    SET insert_vals = insert_vals || ', src.region, CURRENT_TIMESTAMP(), FALSE, CAST(NULL AS TIMESTAMP)';
     SET exec_sql = FORMAT("""
       MERGE `%s.%s` AS tgt USING (%s) AS src ON %s
       WHEN MATCHED THEN UPDATE SET %s
       WHEN NOT MATCHED BY TARGET THEN INSERT (%s) VALUES (%s)
-      WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' THEN DELETE
+      WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' THEN
+        UPDATE SET is_deleted = TRUE, deleted_time = IFNULL(tgt.deleted_time, CURRENT_TIMESTAMP())
     """, dataset_name,dest_table_name,batch_union_sql,on_clause,set_clause,insert_cols,insert_vals,region);
 
     BEGIN
@@ -1193,19 +1240,24 @@ BEGIN
       CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, source_scope, 'BY_ORG snapshot merge failed: '||@@error.message, exec_sql);
     END;
 
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- SNAPSHOT_MERGE: Non-BY_ORG (per-project batch)
+  -- ✅ MODIFIED: Soft-delete instead of hard DELETE
+  -- ═══════════════════════════════════════════════════════════════════════════
   ELSEIF cfg.strategy = 'SNAPSHOT_MERGE' AND NOT cfg.is_by_org THEN
     SET on_clause = 'tgt.region = src.region AND tgt.project = src.project';
     SET on_clause = (SELECT on_clause||' AND '||STRING_AGG(FORMAT('tgt.%s = src.%s',k,k),' AND ') FROM UNNEST(SPLIT(cfg.merge_keys,', ')) AS k);
     SET set_clause = (SELECT STRING_AGG(FORMAT('%s = src.%s',c,c),', ') FROM UNNEST(SPLIT(col_list,', ')) AS c);
-    SET set_clause = set_clause || ', ingestion_ts = CURRENT_TIMESTAMP()';
-    SET insert_cols = col_list || ', region, project, ingestion_ts';
+    SET set_clause = set_clause || ', ingestion_ts = CURRENT_TIMESTAMP(), is_deleted = FALSE, deleted_time = CAST(NULL AS TIMESTAMP)';
+    SET insert_cols = col_list || ', region, project, ingestion_ts, is_deleted, deleted_time';
     SET insert_vals = (SELECT STRING_AGG(FORMAT('src.%s',c),', ') FROM UNNEST(SPLIT(col_list,', ')) AS c);
-    SET insert_vals = insert_vals || ', src.region, src.project, CURRENT_TIMESTAMP()';
+    SET insert_vals = insert_vals || ', src.region, src.project, CURRENT_TIMESTAMP(), FALSE, CAST(NULL AS TIMESTAMP)';
     SET exec_sql = FORMAT("""
       MERGE `%s.%s` AS tgt USING (%s) AS src ON %s
       WHEN MATCHED THEN UPDATE SET %s
       WHEN NOT MATCHED BY TARGET THEN INSERT (%s) VALUES (%s)
-      WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' AND tgt.project IN UNNEST(@batch_projects) THEN DELETE
+      WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' AND tgt.project IN UNNEST(@batch_projects) THEN
+        UPDATE SET is_deleted = TRUE, deleted_time = IFNULL(tgt.deleted_time, CURRENT_TIMESTAMP())
     """, dataset_name,dest_table_name,batch_union_sql,on_clause,set_clause,insert_cols,insert_vals,region);
 
     BEGIN
@@ -1221,7 +1273,8 @@ BEGIN
           USING (SELECT %s, '%s' AS region, '%s' AS project FROM `%s.region-%s`.INFORMATION_SCHEMA.%s) AS src ON %s
           WHEN MATCHED THEN UPDATE SET %s
           WHEN NOT MATCHED BY TARGET THEN INSERT (%s) VALUES (%s)
-          WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' AND tgt.project = '%s' THEN DELETE
+          WHEN NOT MATCHED BY SOURCE AND tgt.region='%s' AND tgt.project = '%s' THEN
+            UPDATE SET is_deleted = TRUE, deleted_time = IFNULL(tgt.deleted_time, CURRENT_TIMESTAMP())
         """, dataset_name, dest_table_name, typed_select, region, fallback_project, fallback_project, region, cfg.table_name, on_clause, set_clause, insert_cols, insert_vals, region, fallback_project);
 
         BEGIN
@@ -1232,7 +1285,7 @@ BEGIN
         END;
       END FOR;
     END;
-    
+
   ELSE
     CALL unravel_share_us_new._log_error(current_run_ts, dest_table_name, source_scope, 'Unknown strategy context detected: '||cfg.strategy, NULL);
   END IF;
