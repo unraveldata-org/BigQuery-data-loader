@@ -18,6 +18,181 @@ CREATE TABLE IF NOT EXISTS `unravel_share_us_new.error_log`
 PARTITION BY DATE(logged_at)
 CLUSTER BY project_id;
 
+-- TABLES_US
+ALTER TABLE `unravel_share_us_new.TABLES_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.TABLES_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.TABLES_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.TABLES_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- VIEWS_US
+ALTER TABLE `unravel_share_us_new.VIEWS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.VIEWS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.VIEWS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.VIEWS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- MATERIALIZED_VIEWS_US
+ALTER TABLE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- TABLE_OPTIONS_US
+ALTER TABLE `unravel_share_us_new.TABLE_OPTIONS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.TABLE_OPTIONS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.TABLE_OPTIONS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.TABLE_OPTIONS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- TABLE_STORAGE_US
+ALTER TABLE `unravel_share_us_new.TABLE_STORAGE_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.TABLE_STORAGE_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.TABLE_STORAGE_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.TABLE_STORAGE_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- COLUMNS_US
+ALTER TABLE `unravel_share_us_new.COLUMNS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.COLUMNS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.COLUMNS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.COLUMNS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- SCHEMATA_US
+ALTER TABLE `unravel_share_us_new.SCHEMATA_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.SCHEMATA_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- SCHEMATA_OPTIONS_US
+ALTER TABLE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- SCHEMATA_LINKS_US
+ALTER TABLE `unravel_share_us_new.SCHEMATA_LINKS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_LINKS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.SCHEMATA_LINKS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_LINKS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- SCHEMATA_REPLICAS_US
+ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US
+ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- ASSIGNMENTS_US
+ALTER TABLE `unravel_share_us_new.ASSIGNMENTS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.ASSIGNMENTS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.ASSIGNMENTS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.ASSIGNMENTS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- RESERVATIONS_US
+ALTER TABLE `unravel_share_us_new.RESERVATIONS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.RESERVATIONS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.RESERVATIONS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.RESERVATIONS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- CAPACITY_COMMITMENTS_US
+ALTER TABLE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- INSIGHTS_US
+ALTER TABLE `unravel_share_us_new.INSIGHTS_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.INSIGHTS_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.INSIGHTS_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.INSIGHTS_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
+
+-- RECOMMENDATIONS_BY_ORGANIZATION_US
+ALTER TABLE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
+ADD COLUMN IF NOT EXISTS is_deleted BOOL;
+ALTER TABLE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
+ALTER COLUMN is_deleted SET DEFAULT FALSE;
+UPDATE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
+SET is_deleted = FALSE
+WHERE is_deleted IS NULL;
+ALTER TABLE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
+ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- UTILITY A: _log_error (Modularized Diagnostic Logger)
