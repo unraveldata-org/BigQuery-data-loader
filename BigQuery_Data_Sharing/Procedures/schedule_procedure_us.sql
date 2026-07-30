@@ -18,184 +18,9 @@ CREATE TABLE IF NOT EXISTS `unravel_share_us_new.error_log`
 PARTITION BY DATE(logged_at)
 CLUSTER BY project_id;
 
--- TABLES_US
-ALTER TABLE `unravel_share_us_new.TABLES_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.TABLES_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.TABLES_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.TABLES_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- VIEWS_US
-ALTER TABLE `unravel_share_us_new.VIEWS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.VIEWS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.VIEWS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.VIEWS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- MATERIALIZED_VIEWS_US
-ALTER TABLE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.MATERIALIZED_VIEWS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- TABLE_OPTIONS_US
-ALTER TABLE `unravel_share_us_new.TABLE_OPTIONS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.TABLE_OPTIONS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.TABLE_OPTIONS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.TABLE_OPTIONS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- TABLE_STORAGE_US
-ALTER TABLE `unravel_share_us_new.TABLE_STORAGE_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.TABLE_STORAGE_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.TABLE_STORAGE_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.TABLE_STORAGE_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- COLUMNS_US
-ALTER TABLE `unravel_share_us_new.COLUMNS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.COLUMNS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.COLUMNS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.COLUMNS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- SCHEMATA_US
-ALTER TABLE `unravel_share_us_new.SCHEMATA_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.SCHEMATA_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- SCHEMATA_OPTIONS_US
-ALTER TABLE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_OPTIONS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- SCHEMATA_LINKS_US
-ALTER TABLE `unravel_share_us_new.SCHEMATA_LINKS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_LINKS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.SCHEMATA_LINKS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_LINKS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- SCHEMATA_REPLICAS_US
-ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US
-ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.SCHEMATA_REPLICAS_BY_FAILOVER_RESERVATION_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- ASSIGNMENTS_US
-ALTER TABLE `unravel_share_us_new.ASSIGNMENTS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.ASSIGNMENTS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.ASSIGNMENTS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.ASSIGNMENTS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- RESERVATIONS_US
-ALTER TABLE `unravel_share_us_new.RESERVATIONS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.RESERVATIONS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.RESERVATIONS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.RESERVATIONS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- CAPACITY_COMMITMENTS_US
-ALTER TABLE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.CAPACITY_COMMITMENTS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- INSIGHTS_US
-ALTER TABLE `unravel_share_us_new.INSIGHTS_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.INSIGHTS_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.INSIGHTS_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.INSIGHTS_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
--- RECOMMENDATIONS_BY_ORGANIZATION_US
-ALTER TABLE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
-ADD COLUMN IF NOT EXISTS is_deleted BOOL;
-ALTER TABLE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
-ALTER COLUMN is_deleted SET DEFAULT FALSE;
-UPDATE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
-SET is_deleted = FALSE
-WHERE is_deleted IS NULL;
-ALTER TABLE `unravel_share_us_new.RECOMMENDATIONS_BY_ORGANIZATION_US`
-ADD COLUMN IF NOT EXISTS deleted_time TIMESTAMP;
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- UTILITY A: _log_error (Modularized Diagnostic Logger)
+-- (unchanged)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._log_error(
   run_ts TIMESTAMP, dest_table STRING, project_id STRING, error_message STRING, failed_sql STRING
@@ -208,6 +33,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- UTILITY B: _update_project_ledger (Modularized Conditional Ledger Evaluator)
+-- ★ 1 FIX: EXECUTE IMMEDIATE had no try/catch — now wrapped with error logging
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._update_project_ledger(
   control_ledger STRING, raw_error STRING, target_project STRING, target_table STRING
@@ -215,6 +41,7 @@ CREATE OR REPLACE PROCEDURE unravel_share_us_new._update_project_ledger(
 BEGIN
   DECLARE upper_error STRING DEFAULT UPPER(raw_error);
   DECLARE update_allowed BOOL DEFAULT FALSE;
+  DECLARE exec_sql STRING;
 
   -- Conditional Check Constraint Rule Core Isolation Unit
   SET update_allowed = (
@@ -224,18 +51,31 @@ BEGIN
   );
 
   IF update_allowed THEN
-    EXECUTE IMMEDIATE FORMAT("""
+    SET exec_sql = FORMAT("""
       UPDATE `%s`
       SET access_allowed = FALSE,
           reason = @reason
       WHERE project_id = @project_id AND table_name = @table_name
-    """, control_ledger)
-    USING raw_error AS reason, target_project AS project_id, target_table AS table_name;
+    """, control_ledger);
+
+    -- ★ NEW: Was missing error handling entirely — EXECUTE IMMEDIATE had no try/catch
+    BEGIN
+      EXECUTE IMMEDIATE exec_sql
+      USING raw_error AS reason, target_project AS project_id, target_table AS table_name;
+    EXCEPTION WHEN ERROR THEN
+      CALL unravel_share_us_new._log_error(
+        CURRENT_TIMESTAMP(), target_table, target_project,
+        '_update_project_ledger: Failed to update control ledger access_allowed=FALSE. Error: ' || @@error.message,
+        exec_sql
+      );
+    END;
   END IF;
 END;
 
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. create_projects_table (Seeds root entries & handles dynamic project configurations)
+-- (unchanged)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_projects_list.create_projects_table(
   dataset_name STRING,
@@ -329,6 +169,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 3. export_billing_data_incremental (Utilizes customized billing selector logic)
+-- ★ 1 FIX: Silent fallback when _build_billing_typed_select returns NULL
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_billing_data_incremental(
   dataset_name STRING,
@@ -384,6 +225,13 @@ BEGIN
   );
 
   IF typed_billing_select IS NULL OR typed_billing_select = '' THEN
+    -- ★ NEW: Was completely silent — now logs that _build_billing_typed_select failed
+    CALL unravel_share_us_new._log_error(
+      current_run_ts, dest_table, billing_export_project,
+      '_build_billing_typed_select returned NULL/empty. Falling back to raw billing_col_list. '
+      || 'STRUCT columns will NOT be reconstructed — schema drift on nested fields will cause assignment errors.',
+      NULL
+    );
     SET typed_billing_select = billing_col_list;
   END IF;
 
@@ -408,7 +256,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 4. _build_typed_select
--- ✅ MODIFIED: Added 'is_deleted','deleted_time' to column exclusion list
+-- ★ 4 FIXES: All 4 silent failure paths now log to error_log
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._build_typed_select(
   dataset_name     STRING,
@@ -476,6 +324,12 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql;
   EXCEPTION WHEN ERROR THEN
+    -- ★ NEW — PATH 1: Work table creation failed (was: silent SET typed_select = NULL; RETURN;)
+    CALL unravel_share_us_new._log_error(
+      CURRENT_TIMESTAMP(), dest_table_name, '_build_typed_select',
+      'PATH 1: Work table creation failed. Falling back to raw col_list. Error: ' || @@error.message,
+      exec_sql
+    );
     SET typed_select = NULL;
     RETURN;
   END;
@@ -483,6 +337,14 @@ BEGIN
   EXECUTE IMMEDIATE FORMAT("SELECT MAX(depth) FROM `%s.%s`", dataset_name, work_table) INTO max_depth;
 
   IF max_depth IS NULL OR max_depth = 0 THEN
+    -- ★ NEW — PATH 2: No nested STRUCTs found (was: silent SET typed_select = col_list; RETURN;)
+    CALL unravel_share_us_new._log_error(
+      CURRENT_TIMESTAMP(), dest_table_name, '_build_typed_select',
+      FORMAT('PATH 2: max_depth is %t — no nested STRUCTs found in destination table COLUMN_FIELD_PATHS. '
+        || 'Returning raw col_list. STRUCT columns will NOT be reconstructed and schema drift will cause failures.',
+        max_depth),
+      FORMAT('SELECT MAX(depth) FROM `%s.%s`', dataset_name, work_table)
+    );
     EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, work_table);
     SET typed_select = col_list;
     RETURN;
@@ -551,6 +413,14 @@ BEGIN
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
+      -- ★ NEW — PATH 3: Collapsing loop failed (was: silent SET typed_select = col_list; RETURN;)
+      CALL unravel_share_us_new._log_error(
+        CURRENT_TIMESTAMP(), dest_table_name, '_build_typed_select',
+        FORMAT('PATH 3: Collapsing loop failed at depth=%d (max_depth=%d). '
+          || 'Falling back to raw col_list. Error: %s',
+          current_depth, max_depth, @@error.message),
+        exec_sql
+      );
       EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, work_table);
       SET typed_select = col_list;
       RETURN;
@@ -575,6 +445,13 @@ BEGIN
   EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, work_table);
 
   IF typed_select IS NULL OR typed_select = '' THEN
+    -- ★ NEW — PATH 4: STRING_AGG returned NULL (was: silent SET typed_select = col_list;)
+    CALL unravel_share_us_new._log_error(
+      CURRENT_TIMESTAMP(), dest_table_name, '_build_typed_select',
+      'PATH 4: Final STRING_AGG returned NULL/empty after collapsing loop completed successfully. '
+      || 'Falling back to raw col_list. This suggests all rows were filtered out during the collapse.',
+      FORMAT('STRING_AGG query on work table `%s.%s` WHERE depth=0', dataset_name, work_table)
+    );
     SET typed_select = col_list;
   END IF;
 END;
@@ -582,6 +459,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 4b. _build_billing_typed_select (Decoupled Billing Struct Field Map Sub-Routine)
+-- ★ 4 FIXES: All 4 silent failure paths now log to error_log (same pattern as 4)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._build_billing_typed_select(
   dataset_name     STRING,
@@ -649,6 +527,12 @@ BEGIN
   BEGIN
     EXECUTE IMMEDIATE exec_sql;
   EXCEPTION WHEN ERROR THEN
+    -- ★ NEW — PATH 1: Work table creation failed (was: silent SET typed_select = NULL; RETURN;)
+    CALL unravel_share_us_new._log_error(
+      CURRENT_TIMESTAMP(), dest_table_name, '_build_billing_typed_select',
+      'PATH 1: Billing work table creation failed. Falling back to raw col_list. Error: ' || @@error.message,
+      exec_sql
+    );
     SET typed_select = NULL;
     RETURN;
   END;
@@ -656,6 +540,14 @@ BEGIN
   EXECUTE IMMEDIATE FORMAT("SELECT MAX(depth) FROM `%s.%s`", dataset_name, work_table) INTO max_depth;
 
   IF max_depth IS NULL OR max_depth = 0 THEN
+    -- ★ NEW — PATH 2: No nested STRUCTs found (was: silent SET typed_select = col_list; RETURN;)
+    CALL unravel_share_us_new._log_error(
+      CURRENT_TIMESTAMP(), dest_table_name, '_build_billing_typed_select',
+      FORMAT('PATH 2: max_depth is %t — no nested STRUCTs found in billing destination COLUMN_FIELD_PATHS. '
+        || 'Returning raw col_list.',
+        max_depth),
+      FORMAT('SELECT MAX(depth) FROM `%s.%s`', dataset_name, work_table)
+    );
     EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, work_table);
     SET typed_select = col_list;
     RETURN;
@@ -724,6 +616,14 @@ BEGIN
     BEGIN
       EXECUTE IMMEDIATE exec_sql;
     EXCEPTION WHEN ERROR THEN
+      -- ★ NEW — PATH 3: Collapsing loop failed (was: silent SET typed_select = col_list; RETURN;)
+      CALL unravel_share_us_new._log_error(
+        CURRENT_TIMESTAMP(), dest_table_name, '_build_billing_typed_select',
+        FORMAT('PATH 3: Billing collapsing loop failed at depth=%d (max_depth=%d). '
+          || 'Falling back to raw col_list. Error: %s',
+          current_depth, max_depth, @@error.message),
+        exec_sql
+      );
       EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, work_table);
       SET typed_select = col_list;
       RETURN;
@@ -748,6 +648,13 @@ BEGIN
   EXECUTE IMMEDIATE FORMAT("DROP TABLE IF EXISTS `%s.%s`", dataset_name, work_table);
 
   IF typed_select IS NULL OR typed_select = '' THEN
+    -- ★ NEW — PATH 4: STRING_AGG returned NULL (was: silent SET typed_select = col_list;)
+    CALL unravel_share_us_new._log_error(
+      CURRENT_TIMESTAMP(), dest_table_name, '_build_billing_typed_select',
+      'PATH 4: Final STRING_AGG returned NULL/empty for billing typed select. '
+      || 'Falling back to raw col_list.',
+      FORMAT('STRING_AGG query on billing work table `%s.%s` WHERE depth=0', dataset_name, work_table)
+    );
     SET typed_select = col_list;
   END IF;
 END;
@@ -755,9 +662,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 5. export_metadata_incremental_US
--- ✅ MODIFIED:
---    - DDL adds is_deleted BOOL and deleted_time TIMESTAMP columns
---    - col_list excludes is_deleted, deleted_time
+-- ★ 1 FIX: Silent fallback when _build_typed_select returns NULL
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US(
   dataset_name   STRING,
@@ -859,7 +764,6 @@ BEGIN
     SET baseline_project = NULL;
 
     IF cfg.is_by_org THEN
-      -- ✅ FIX: Only add is_deleted/deleted_time for SNAPSHOT_MERGE strategy
       IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
         SET exec_sql = FORMAT("""
           CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
@@ -892,7 +796,6 @@ BEGIN
         SET test_project = project_ids[OFFSET(ddl_project_idx)];
         SET ddl_project_idx = ddl_project_idx + 1;
 
-        -- ✅ FIX: Only add is_deleted/deleted_time for SNAPSHOT_MERGE strategy
         IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
           SET exec_sql = FORMAT("""
             CREATE TABLE IF NOT EXISTS `%s.%s` %s %s %s AS
@@ -944,7 +847,6 @@ BEGIN
       CONTINUE;
     END;
 
-    -- ✅ MODIFIED: col_list now also excludes is_deleted and deleted_time
     SET exec_sql = FORMAT("""
       SELECT STRING_AGG(c.column_name, ', ' ORDER BY c.ordinal_position)
       FROM `region-%s`.INFORMATION_SCHEMA.COLUMNS c
@@ -972,7 +874,17 @@ BEGIN
     END IF;
 
     CALL unravel_share_us_new._build_typed_select(dataset_name, dest_table_name, region, col_list, typed_select);
-    IF typed_select IS NULL THEN SET typed_select = col_list; END IF;
+    -- ★ NEW: Was silent — now logs the fallback with table context
+    IF typed_select IS NULL THEN
+      CALL unravel_share_us_new._log_error(
+        current_run_ts, dest_table_name, 'TYPED_SELECT',
+        '_build_typed_select returned NULL for table ' || current_table
+          || '. Falling back to raw col_list. '
+          || 'STRUCT columns will NOT be reconstructed — schema drift on nested fields will cause assignment errors.',
+        NULL
+      );
+      SET typed_select = col_list;
+    END IF;
 
     -- ═══════════════════════════════════════════════════════════════════════
     -- BY_ORG tables branch
@@ -984,7 +896,6 @@ BEGIN
         CALL unravel_share_us_new._flush_batch(dataset_name,dest_table_name,col_list,region,
           batch_union_sql,CAST([] AS ARRAY<STRING>),cfg,current_run_ts,typed_select,lookback_days,control_ledger,'WHERE TRUE',job_timeout_hours);
 
-        -- ✅ Hard-delete: runs ONCE for BY_ORG SNAPSHOT_MERGE
         SET cleanup_sql = FORMAT("""
           DELETE FROM `%s.%s`
           WHERE is_deleted = TRUE
@@ -1161,7 +1072,7 @@ BEGIN
         batch_union_sql,batch_projects,cfg,current_run_ts,typed_select,lookback_days,control_ledger,time_filter,job_timeout_hours);
     END IF;
 
-    -- ✅ Hard-delete: runs ONCE per table after all batches/branches complete
+    -- Hard-delete: runs ONCE per table after all batches/branches complete
     IF cfg.strategy = 'SNAPSHOT_MERGE' THEN
       SET cleanup_sql = FORMAT("""
         DELETE FROM `%s.%s`
@@ -1182,13 +1093,8 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 6. _flush_batch
--- ✅ MODIFIED (Soft-Delete):
---    - WHEN MATCHED → also resets is_deleted=FALSE, deleted_time=NULL (resurrect)
---    - WHEN NOT MATCHED BY TARGET → inserts with is_deleted=FALSE, deleted_time=NULL
---    - WHEN NOT MATCHED BY SOURCE → UPDATE SET is_deleted=TRUE, deleted_time=IFNULL(...)
---      instead of DELETE
---    - After MERGE: hard-delete rows where is_deleted=TRUE AND deleted_time older
---      than soft_delete_retention_days (default 90)
+-- ★ 1 FIX: Added early warning log when typed_select equals raw col_list
+--           for tables with known STRUCT columns (JOBS family)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new._flush_batch(
   dataset_name STRING,
@@ -1225,6 +1131,19 @@ BEGIN
   DECLARE fallback_last_sync_date DATE;
 
   SET source_scope = IF(cfg.is_by_org, 'BY_ORG_MERGE', 'BATCH');
+
+  -- ★ NEW: Early warning when typed_select = raw col_list for STRUCT-heavy tables
+  IF typed_select = col_list
+    AND cfg.table_name IN ('JOBS', 'JOBS_TIMELINE', 'JOBS_BY_ORGANIZATION', 'JOBS_TIMELINE_BY_ORGANIZATION')
+  THEN
+    CALL unravel_share_us_new._log_error(
+      current_run_ts, dest_table_name, source_scope,
+      'WARNING: typed_select equals raw col_list for table ' || cfg.table_name
+        || '. STRUCT columns are NOT being reconstructed. '
+        || 'If source schema has drifted, this MERGE will fail with a STRUCT assignment error.',
+      NULL
+    );
+  END IF;
 
   -- ── Happy Path Output Dispatches ───────────────────────────────────────────
   IF cfg.strategy IN ('INCREMENTAL_APPEND','AUDIT_APPEND','INCREMENTAL_MERGE') THEN
@@ -1391,7 +1310,6 @@ BEGIN
 
   -- ═══════════════════════════════════════════════════════════════════════════
   -- SNAPSHOT_MERGE: BY_ORG
-  -- ✅ MODIFIED: Soft-delete instead of hard DELETE
   -- ═══════════════════════════════════════════════════════════════════════════
   ELSEIF cfg.strategy = 'SNAPSHOT_MERGE' AND cfg.is_by_org THEN
     SET on_clause = 'tgt.region = src.region';
@@ -1417,7 +1335,6 @@ BEGIN
 
   -- ═══════════════════════════════════════════════════════════════════════════
   -- SNAPSHOT_MERGE: Non-BY_ORG (per-project batch)
-  -- ✅ MODIFIED: Soft-delete instead of hard DELETE
   -- ═══════════════════════════════════════════════════════════════════════════
   ELSEIF cfg.strategy = 'SNAPSHOT_MERGE' AND NOT cfg.is_by_org THEN
     SET on_clause = 'tgt.region = src.region AND tgt.project = src.project';
@@ -1469,6 +1386,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 7. Wrapper (Updated to accept and pass job_timeout_hours parameter)
+-- (unchanged)
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE PROCEDURE unravel_share_us_new.export_metadata_incremental_US_all_projects(
   dataset_name STRING, 
