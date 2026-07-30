@@ -1,11 +1,3 @@
-SET @@location = 'US';
-
-CREATE SCHEMA IF NOT EXISTS unravel_share_us_new
-  OPTIONS (location = 'US');
-
-CREATE SCHEMA IF NOT EXISTS unravel_share_us_projects_list
-  OPTIONS (location = 'US');
-
 CREATE TABLE IF NOT EXISTS `unravel_share_us_new.error_log`
 (
   run_ts        TIMESTAMP,
